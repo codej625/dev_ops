@@ -961,8 +961,6 @@ Traefik은 Middleware 리소스로 rate-limit을 설정함.
 아래 YAML을 파일로 저장 후 kubectl apply 로 적용.
 ```
 
-<br />
-
 `middleware.yaml`
 
 ```yaml
