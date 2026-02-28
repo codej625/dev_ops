@@ -261,6 +261,9 @@ kubectl apply -f https://kube-vip.io/manifests/rbac.yaml
 # ⚠️ --interface: 실제 네트워크 인터페이스명으로 변경 (ip a 또는 ip link 로 확인)
 # ⚠️ --address: VIP 주소로 변경
 # ⚠️ 버전(v0.8.7)은 최신 stable 버전으로 변경: https://github.com/kube-vip/kube-vip/releases
+# ⚠️ VIP(192.168.0.240)는 공유기 DHCP 자동 할당 범위 밖의 IP로 설정할 것
+# 공유기 관리자 페이지에서 DHCP 범위를 확인하고, 해당 범위에 포함되지 않는 IP를 사용해야 함
+# DHCP 범위가 192.168.0.100~200 이라면 192.168.0.240 은 안전하지만 환경마다 다름
 docker run --network host --rm ghcr.io/kube-vip/kube-vip:v0.8.7 \
   manifest daemonset \
   --interface eth0 \
@@ -301,7 +304,11 @@ kubectl get pods -n kube-system -l app=kube-vip
 6. Ingress Controller 설정 (K3s 기본 Traefik)
 
 ```zsh
-# VM1 에서 실행
+# ⚠️ patch 전에 Traefik Pod가 정상 Running 상태인지 먼저 확인
+# Traefik이 CrashLoopBackOff 상태면 patch를 해도 EXTERNAL-IP가 할당되지 않음
+kubectl get pods -n kube-system -l app.kubernetes.io/name=traefik
+# STATUS가 Running이어야 다음 단계 진행
+
 # kube-vip address와 requestedIP를 동일하게 맞춰야 함
 # ⚠️ patch와 annotate를 따로 두 번 실행하면 덮어쓰기 문제가 발생할 수 있음
 # --type=merge 로 spec과 annotation을 한 번에 적용
@@ -316,8 +323,10 @@ kubectl patch svc traefik -n kube-system \
 ```
 
 ```zsh
-# traefik가 잘 떠 있는지 확인
-# EXTERNAL-IP 컬럼에 192.168.0.240이 표시되면 정상
+# ⚠️ patch 후 kube-vip가 ServiceLB 요청을 처리할 때까지 수 초 걸릴 수 있음
+# EXTERNAL-IP가 바로 안 나타나면 아래 명령으로 할당될 때까지 대기
+kubectl get svc -n kube-system traefik -w
+# EXTERNAL-IP 컬럼에 192.168.0.240이 표시되면 정상 (Ctrl+C로 종료)
 kubectl get svc -n kube-system traefik
 ```
 
@@ -379,7 +388,7 @@ kubectl logs -n cert-manager -l app=cert-manager --tail=100
 
 # ⚠️ HTTP01 챌린지 전제 조건
 # cert-manager가 HTTP01 챌린지를 수행하려면 Let's Encrypt 서버가 외부에서 도메인의 80포트로 접근 가능해야 함.
-# 공유기 포트포워딩(12번 항목)이 먼저 설정되어 있어야 인증서 발급이 성공함.
+# 공유기 포트포워딩(13번 항목)이 먼저 설정되어 있어야 인증서 발급이 성공함.
 # 일부 ISP (KT, SKB 등 일부 요금제)는 80/443 포트 자체를 차단하는 경우가 있음.
 # → 해당 환경에서는 DNS01 챌린지 방식으로 전환 필요: https://cert-manager.io/docs/configuration/acme/dns01/
 ```
@@ -422,6 +431,7 @@ spec:
       containers:
       - name: spring
         image: <your-spring-image>:<tag>  # 실제 이미지로 변경
+        imagePullPolicy: Always  # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
         ports:
         - containerPort: 8080
 ```
@@ -449,6 +459,7 @@ spec:
       containers:
       - name: next
         image: <your-next-image>:<tag>  # 실제 이미지로 변경
+        imagePullPolicy: Always  # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
         ports:
         - containerPort: 3000
 ```
@@ -527,7 +538,13 @@ spec:
 <br />
 
 ```zsh
-# kubectl get ingressclass 로 traefik 있는지 보고, 없을 때만 ingressclass-traefik.yaml 적용
+# K3s 설치 시 traefik IngressClass가 자동 생성됨
+# 아래로 먼저 확인하고, 목록에 traefik 이 없을 때만 apply 실행
+kubectl get ingressclass
+# NAME      CONTROLLER                      PARAMETERS   AGE
+# traefik   traefik.io/ingress-controller   <none>       5m  ← 이 항목이 있으면 생략 가능
+
+# traefik 항목이 없을 때만 실행
 kubectl apply -f ingressclass-traefik.yaml
 ```
 
@@ -536,6 +553,14 @@ kubectl apply -f ingressclass-traefik.yaml
 <br />
 
 10. Ingress 라우팅 설정
+
+```zsh
+# ⚠️ Ingress apply 전 ClusterIssuer가 Ready 상태인지 반드시 확인
+# READY: True 가 아닌 상태에서 apply 하면 인증서 발급이 시작되지 않음
+kubectl get clusterissuer letsencrypt-prod
+```
+
+<br />
 
 `ingress.yaml`
 
@@ -623,13 +648,17 @@ spec:
 ```
 
 ```zsh
-# ⚠️ Ingress apply 전 ClusterIssuer가 Ready 상태인지 반드시 확인
-# READY: True 가 아닌 상태에서 apply 하면 인증서 발급이 시작되지 않음
-kubectl get clusterissuer letsencrypt-prod
-
 kubectl apply -f ingress.yaml
 kubectl get ingress
 kubectl get svc
+
+# 인증서 발급 진행 확인 (Ingress apply 후 자동 시작, 최대 2-3분 소요)
+# READY: False → 발급 진행 중 / READY: True → 발급 완료
+kubectl get certificate -A -w
+# Ctrl+C 로 종료
+
+# 발급이 오래 걸리거나 실패 시 상세 확인
+kubectl describe certificate example-tls -n default
 ```
 
 <br />
@@ -733,7 +762,7 @@ kubectl describe certificate example-tls -n default | grep -A 10 Events
 kubectl get pods -n cert-manager
 
 # 갱신 실패 시 수동으로 갱신 강제 트리거
-# (certificate 리소스를 삭제하면 cert-manager가 즉시 재발급 시도)
+# (Secret을 삭제하면 cert-manager가 즉시 재발급 시도)
 kubectl delete secret example-tls -n default
 # Secret 삭제 후 cert-manager가 자동으로 새 인증서 발급 시작
 # kubectl get certificate -A -w 로 상태 모니터링
@@ -875,4 +904,93 @@ kubectl delete pod test-1 test-2
 → VIP 확인 (kubectl get svc traefik) → 인증서 확인 (kubectl get certificate)
 → Endpoint 확인 (kubectl get endpoints) → 앱 Pod 확인 (kubectl get pods)
 → Pod 간 통신 확인 (kubectl exec ping 테스트)
+```
+
+<br />
+<br />
+<br />
+
+* TIP
+
+```
+* 클러스터 내부에서 Service 이름으로 연결
+
+백엔드에서 디비 서버를 붙일때는
+서비스 이름으로 지정해놓으면 됨.
+
+ex) PostgreSQL → jdbc:postgresql://database-service:5432/dbname
+
+┌───────────────────────────────────────┐
+│            Service 타입 계층            │
+│                                       │
+│  ┌─────────────────────────────────┐  │
+│  │         LoadBalancer            │  │
+│  │  ┌───────────────────────────┐  │  │
+│  │  │        NodePort           │  │  │
+│  │  │  ┌─────────────────────┐  │  │  │
+│  │  │  │     ClusterIP       │  │  │  │
+│  │  │  │     (기본 포함)       │  │  │  │
+│  │  │  └─────────────────────┘  │  │  │
+│  │  └───────────────────────────┘  │  │
+│  └─────────────────────────────────┘  │
+└───────────────────────────────────────┘
+           * NodePort는 ClusterIP를 포함
+
+내부 접속: database-service:5432 또는 10.43.123.45:5432 (ClusterIP)
+외부 접속: 192.168.0.30:30432 (NodePort)
+```
+
+<br />
+<br />
+
+```
+* 아이피 고정
+
+각 VM의 IP 고정은 공유기 DHCP 설정에서
+현재 사용 중인 MAC 주소에 IP를 예약(고정 할당)하는 방식이 권장됨.
+VM에서 별도 네트워크 설정을 하지 않아도 되므로 관리가 편함.
+```
+
+<br />
+<br />
+
+```
+* Ingress에 rate-limit 추가 고려 (Traefik 방식)
+
+Traefik은 Middleware 리소스로 rate-limit을 설정함.
+아래 YAML을 파일로 저장 후 kubectl apply 로 적용.
+```
+
+<br />
+
+`middleware.yaml`
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit
+  namespace: default
+spec:
+  rateLimit:
+    average: 10   # 초당 평균 허용 요청 수
+    burst: 50     # 순간 최대 허용 요청 수
+```
+
+```zsh
+kubectl apply -f middleware.yaml
+
+# Ingress annotation에 추가 (적용할 Ingress의 annotations 하위에 추가)
+# traefik.ingress.kubernetes.io/router.middlewares: default-rate-limit@kubernetescrd
+# 형식: <namespace>-<middleware-name>@kubernetescrd
+```
+
+<br />
+<br />
+
+```
+* Minimal (최소 설치) -> Ubuntu Server (표준 설치)
+
+sudo unminimize 명령어를 실행하면,
+Ubuntu Minimal Install (최소 설치) 상태에서 표준 Ubuntu Server 환경과 동일한 수준의 패키지 셋이 설치된다.
 ```
