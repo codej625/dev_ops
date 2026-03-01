@@ -103,6 +103,7 @@ EOF
 
 ```zsh
 # Master 노드 (VM1)
+sudo ufw allow 22/tcp          # SSH
 sudo ufw allow 6443/tcp        # K3s API Server
 sudo ufw allow 10250/tcp       # kubelet
 sudo ufw allow 2379:2380/tcp   # etcd
@@ -110,21 +111,18 @@ sudo ufw allow 80/tcp          # HTTP
 sudo ufw allow 443/tcp         # HTTPS
 sudo ufw allow 8472/udp        # Flannel VXLAN (노드 간 Pod 통신 - 반드시 필요)
 sudo ufw allow 51820/udp       # Flannel WireGuard (암호화 모드 사용 시)
-sudo ufw allow 22/tcp
-
 sudo ufw enable
 ```
 
 ```zsh
 # Worker 노드 (VM2, VM3)
+sudo ufw allow 22/tcp          # SSH
 sudo ufw allow 10250/tcp       # kubelet
 sudo ufw allow 30000:32767/tcp # NodePort
 sudo ufw allow 80/tcp          # HTTP
 sudo ufw allow 443/tcp         # HTTPS
 sudo ufw allow 8472/udp        # Flannel VXLAN (노드 간 Pod 통신 - 반드시 필요)
 sudo ufw allow 51820/udp       # Flannel WireGuard (암호화 모드 사용 시)
-sudo ufw allow 22/tcp
-
 sudo ufw enable
 ```
 
@@ -190,10 +188,6 @@ chmod 600 ~/.kube/config
 # 마스터 노드 내부에서는 동작하지만, 외부 PC에서 kubectl로 원격 접근 시 이 파일을 그대로 쓰면 접속 불가
 # 외부 접근이 필요한 경우 server 주소를 실제 마스터 IP로 교체
 sed -i "s/127.0.0.1/192.168.0.101/g" ~/.kube/config
-
-# 영구 적용
-echo 'export KUBECONFIG=~/.kube/config' >> ~/.zshrc
-source ~/.zshrc
 
 # 정상 동작 확인
 kubectl get nodes
@@ -387,27 +381,59 @@ kubectl apply -f letsencrypt-issuer.yaml
 kubectl get clusterissuer
 ```
 
+<br />
+<br />
+<br />
+
+8. 도메인 DNS 설정
+
+```
+도메인 구입처 DNS에서 A 레코드 추가. 
+전파는 수분~최대 24시간 소요될 수 있음.
+
+⚠️ Ingress 적용 전에 DNS 전파가 완료되어 있어야 인증서 발급이 정상 동작함.
+```
+
+<br />
+
+| 구분       | 설명           |
+|-----------|---------------|
+| 도메인     | healthapp.shop |
+| 레코드     | A              |
+| 호스트     | @              |
+| 값(IP주소) | 공인IP          |
+| TTL      | 3600 (1시간)    |
+
 ```zsh
-# ⚠️ Let's Encrypt 발급 실패 시 주의사항
-# 같은 도메인에 대해 1시간 내 5회 이상 실패하면 일시적으로 차단됨 (재시도 쿨다운 발생)
-# 반드시 아래 명령으로 실패 원인을 먼저 확인하고 수정 후 재시도할 것
-
-kubectl describe certificate -A
-kubectl describe certificaterequest -A
-kubectl logs -n cert-manager -l app=cert-manager --tail=100
-
-# ⚠️ HTTP01 챌린지 전제 조건
-# cert-manager가 HTTP01 챌린지를 수행하려면 Let's Encrypt 서버가 외부에서 도메인의 80포트로 접근 가능해야 함.
-# 공유기 포트포워딩(13번 항목)이 먼저 설정되어 있어야 인증서 발급이 성공함.
-# 일부 ISP (KT, SKB 등 일부 요금제)는 80/443 포트 자체를 차단하는 경우가 있음.
-# → 해당 환경에서는 DNS01 챌린지 방식으로 전환 필요: https://cert-manager.io/docs/configuration/acme/dns01/
+nslookup healthapp.shop
+dig healthapp.shop
 ```
 
 <br />
 <br />
 <br />
 
-8. App Deployment 및 Service 설정
+9. 공유기 포트포워딩 설정
+
+```
+⚠️ cert-manager의 HTTP01 챌린지는 외부 → 80포트 → VIP → Traefik 흐름으로 동작함.
+   포트포워딩이 설정되지 않으면 인증서 발급이 실패하므로 Ingress 적용 전에 반드시 먼저 설정할 것.
+
+⚠️ ISP(KT, SKB 등 일부 요금제)에서 80/443 포트를 차단하는 경우가 있음.
+   이 경우 HTTP01 챌린지가 동작하지 않으므로 cert-manager DNS01 챌린지 방식으로 전환 필요.
+   참고: https://cert-manager.io/docs/configuration/acme/dns01/
+```
+
+| 외부 포트    | 내부 IP        | 내부 포트   | 프로토콜   | 설명   |
+|-----------|---------------|-----------|----------|-------|
+| 80        | 192.168.0.240 | 80        | TCP      | HTTP  |
+| 443       | 192.168.0.240 | 443       | TCP      | HTTPS |
+
+<br />
+<br />
+<br />
+
+10. App Deployment 및 Service 설정
 
 ```zsh
 # ⚠️ Service는 selector로 Pod를 찾습니다.
@@ -444,6 +470,13 @@ spec:
         imagePullPolicy: Always  # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
         ports:
         - containerPort: 8080
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "1500m"
+            memory: "1536Mi"
 ```
 
 <br />
@@ -468,8 +501,8 @@ spec:
     spec:
       containers:
       - name: next
-        image: <your-next-image>:<tag>
-        imagePullPolicy: Always
+        image: <your-next-image>:<tag>  # 실제 이미지로 변경
+        imagePullPolicy: Always  # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
         command: ["node"]
         args: ["server.js"]
         ports:
@@ -541,7 +574,7 @@ kubectl get endpoints next-svc  # Pod와 연결 확인
 <br />
 <br />
 
-9. IngressClass (Traefik, 필요 시)
+11. IngressClass (Traefik, 필요 시)
 
 `ingressclass-traefik.yaml`
 
@@ -571,7 +604,7 @@ kubectl apply -f ingressclass-traefik.yaml
 <br />
 <br />
 
-10. Ingress 라우팅 설정
+12. Ingress 라우팅 설정
 
 ```zsh
 # ⚠️ Ingress apply 전 ClusterIssuer가 Ready 상태인지 반드시 확인
@@ -680,51 +713,21 @@ kubectl get certificate -A -w
 kubectl describe certificate example-tls -n default
 ```
 
-<br />
-<br />
-<br />
-
-11. 도메인 DNS 설정
-
-```
-도메인 구입처 DNS에서 A 레코드 추가. 
-전파는 수분~최대 24시간 소요될 수 있음.
-```
-
-<br />
-
-| 구분       | 설명           |
-|-----------|---------------|
-| 도메인     | healthapp.shop |
-| 레코드     | A              |
-| 호스트     | @              |
-| 값(IP주소) | 공인IP          |
-| TTL      | 3600 (1시간)    |
-
 ```zsh
-nslookup healthapp.shop
-dig healthapp.shop
+# ⚠️ Let's Encrypt 발급 실패 시 주의사항
+# 같은 도메인에 대해 1시간 내 5회 이상 실패하면 일시적으로 차단됨 (재시도 쿨다운 발생)
+# 반드시 아래 명령으로 실패 원인을 먼저 확인하고 수정 후 재시도할 것
+
+kubectl describe certificate -A
+kubectl describe certificaterequest -A
+kubectl logs -n cert-manager -l app=cert-manager --tail=100
+
+# ⚠️ HTTP01 챌린지 전제 조건
+# cert-manager가 HTTP01 챌린지를 수행하려면 Let's Encrypt 서버가 외부에서 도메인의 80포트로 접근 가능해야 함.
+# 공유기 포트포워딩(9번 항목)이 먼저 설정되어 있어야 인증서 발급이 성공함.
+# 일부 ISP (KT, SKB 등 일부 요금제)는 80/443 포트 자체를 차단하는 경우가 있음.
+# → 해당 환경에서는 DNS01 챌린지 방식으로 전환 필요: https://cert-manager.io/docs/configuration/acme/dns01/
 ```
-
-<br />
-<br />
-<br />
-
-12. 공유기 포트포워딩 설정
-
-```
-⚠️ cert-manager의 HTTP01 챌린지는 외부 → 80포트 → VIP → Traefik 흐름으로 동작함.
-   포트포워딩이 설정되지 않으면 인증서 발급이 실패하므로 반드시 먼저 설정할 것.
-
-⚠️ ISP(KT, SKB 등 일부 요금제)에서 80/443 포트를 차단하는 경우가 있음.
-   이 경우 HTTP01 챌린지가 동작하지 않으므로 cert-manager DNS01 챌린지 방식으로 전환 필요.
-   참고: https://cert-manager.io/docs/configuration/acme/dns01/
-```
-
-| 외부 포트    | 내부 IP        | 내부 포트   | 프로토콜   | 설명   |
-|-----------|---------------|-----------|----------|-------|
-| 80        | 192.168.0.240 | 80        | TCP      | HTTP  |
-| 443       | 192.168.0.240 | 443       | TCP      | HTTPS |
 
 <br />
 <br />
@@ -818,7 +821,7 @@ spec:
 ```zsh
 # ⚠️ 위 Certificate 리소스는 Ingress에 cert-manager 어노테이션이 있으면 자동 생성됨.
 # 갱신 시점만 바꾸고 싶은 경우에만 위 YAML로 수동 관리.
-# 일반적으로는 Ingress 어노테이션 방식(10번 항목)으로도 자동 갱신이 정상 동작함.
+# 일반적으로는 Ingress 어노테이션 방식(12번 항목)으로도 자동 갱신이 정상 동작함.
 ```
 
 <br />
@@ -833,7 +836,7 @@ kubectl get ingress -A
 kubectl get svc -n kube-system traefik
 kubectl get certificate -A
 kubectl logs -n kube-system -l app.kubernetes.io/name=traefik --tail=100
-kubectl logs -n kube-system -l app=kube-vip --tail=50
+kubectl logs -n kube-system -l app.kubernetes.io/name=kube-vip-ds --tail=50
 ```
 
 <br />
@@ -876,7 +879,7 @@ kubectl describe pod <pod-name>
 
 ```zsh
 # kube-vip 로그 확인
-kubectl logs -n kube-system -l app=kube-vip --tail=100
+kubectl logs -n kube-system -l app.kubernetes.io/name=kube-vip-ds --tail=100
 
 # Traefik EXTERNAL-IP 확인 (Pending 이면 VIP 미할당)
 kubectl get svc -n kube-system traefik
