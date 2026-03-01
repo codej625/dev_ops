@@ -291,14 +291,10 @@ docker run --network host --rm ghcr.io/kube-vip/kube-vip:v0.8.7 \
 # label이 다를 경우 wait가 타임아웃됨
 kubectl get pods -n kube-system | grep kube-vip
 
-kubectl wait --namespace kube-system --for=condition=ready pod --selector=app=kube-vip --timeout=90s
-```
+kubectl wait --namespace kube-system --for=condition=ready pod --selector=app.kubernetes.io/name=kube-vip-ds --timeout=90s
 
-<br />
-
-```zsh
 # kube-vip Pod가 잘 떠 있는지 확인
-kubectl get pods -n kube-system -l app=kube-vip
+kubectl get pods -n kube-system -l app.kubernetes.io/name=kube-vip-ds
 ```
 
 <br />
