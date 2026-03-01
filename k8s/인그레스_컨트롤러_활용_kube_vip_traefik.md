@@ -470,6 +470,8 @@ spec:
       - name: next
         image: <your-next-image>:<tag>
         imagePullPolicy: Always
+        command: ["node"]
+        args: ["server.js"]
         ports:
         - containerPort: 3000
         resources:
