@@ -315,7 +315,10 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=traefik
 kubectl patch svc traefik -n kube-system \
   --type=merge \
   -p '{
-    "spec": {"type": "LoadBalancer"},
+    "spec": {
+      "type": "LoadBalancer",
+      "loadBalancerIP": "192.168.0.240"
+    },
     "metadata": {
       "annotations": {"kube-vip.io/requestedIP": "192.168.0.240"}
     }
@@ -323,6 +326,9 @@ kubectl patch svc traefik -n kube-system \
 ```
 
 ```zsh
+# ⚠️ annotation만으로 VIP가 안 잡히는 경우 spec.loadBalancerIP도 함께 설정할 것
+# kube-vip 버전에 따라 annotation만으로는 Service를 감지 못하는 경우가 있음
+
 # ⚠️ patch 후 kube-vip가 ServiceLB 요청을 처리할 때까지 수 초 걸릴 수 있음
 # EXTERNAL-IP가 바로 안 나타나면 아래 명령으로 할당될 때까지 대기
 kubectl get svc -n kube-system traefik -w
