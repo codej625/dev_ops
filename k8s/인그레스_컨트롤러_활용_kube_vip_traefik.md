@@ -187,6 +187,10 @@ chmod 600 ~/.kube/config
 # 외부 접근이 필요한 경우 server 주소를 실제 마스터 IP로 교체
 sed -i "s/127.0.0.1/192.168.0.101/g" ~/.kube/config
 
+# 영구 적용
+echo 'export KUBECONFIG=~/.kube/config' >> ~/.zshrc
+source ~/.zshrc
+
 # 정상 동작 확인
 kubectl get nodes
 ```
