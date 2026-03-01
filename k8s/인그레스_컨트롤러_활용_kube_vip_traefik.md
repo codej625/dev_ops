@@ -126,26 +126,6 @@ sudo ufw allow 51820/udp       # Flannel WireGuard (암호화 모드 사용 시)
 sudo ufw enable
 ```
 
-```zsh
-# 방화벽 적용 후 노드 간 Pod 통신 확인 방법
-# 서로 다른 노드에 Pod를 하나씩 띄우고 통신 테스트
-# ⚠️ busybox:latest는 pull 실패가 간혹 발생하므로 버전 고정 사용
-kubectl run test-1 --image=busybox:1.36 --overrides='{"spec":{"nodeName":"worker-1"}}' -- sleep 3600
-kubectl run test-2 --image=busybox:1.36 --overrides='{"spec":{"nodeName":"worker-2"}}' -- sleep 3600
-
-# Pod가 Running 상태가 될 때까지 대기
-kubectl get pod test-1 test-2 -w
-
-# test-2의 Pod IP 확인
-kubectl get pod test-2 -o wide
-
-# test-1에서 test-2로 ping 테스트
-kubectl exec test-1 -- ping <test-2-pod-ip> -c 3
-
-# 테스트 후 정리
-kubectl delete pod test-1 test-2
-```
-
 <br />
 <br />
 <br />
@@ -189,6 +169,10 @@ chmod 600 ~/.kube/config
 # 외부 접근이 필요한 경우 server 주소를 실제 마스터 IP로 교체
 sed -i "s/127.0.0.1/192.168.0.101/g" ~/.kube/config
 
+# 영구 적용
+echo 'export KUBECONFIG=~/.kube/config' >> ~/.bashrc
+source ~/.bashrc
+
 # 정상 동작 확인
 kubectl get nodes
 ```
@@ -227,6 +211,28 @@ kubectl get nodes
 | master-1 | Ready  | control-plane,master | 5m  | v1.30.x  |
 | worker-1 | Ready  | <none>               | 2m  | v1.30.x  |
 | worker-2 | Ready  | <none>               | 1m  | v1.30.x  |
+
+<br />
+
+`노드 간 Pod 통신 확인 (VM1에서)`
+
+```zsh
+# ⚠️ busybox:latest는 pull 실패가 간혹 발생하므로 버전 고정 사용
+kubectl run test-1 --image=busybox:1.36 --overrides='{"spec":{"nodeName":"worker-1"}}' -- sleep 3600
+kubectl run test-2 --image=busybox:1.36 --overrides='{"spec":{"nodeName":"worker-2"}}' -- sleep 3600
+
+# Pod가 Running 상태가 될 때까지 대기
+kubectl get pod test-1 test-2 -w
+
+# test-2의 Pod IP 확인
+kubectl get pod test-2 -o wide
+
+# test-1에서 test-2로 ping 테스트
+kubectl exec test-1 -- ping <test-2-pod-ip> -c 3
+
+# 테스트 후 정리
+kubectl delete pod test-1 test-2
+```
 
 <br />
 <br />
