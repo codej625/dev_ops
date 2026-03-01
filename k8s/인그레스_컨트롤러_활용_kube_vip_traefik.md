@@ -508,9 +508,7 @@ spec:
       containers:
       - name: next
         image: <your-next-image>:<tag> # 실제 이미지로 변경
-        imagePullPolicy: IfNotPresent # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
-        command: ["node"]
-        args: ["server.js"]
+        imagePullPolicy: IfNotPresent  # 이미 있으면 pull 생략 (로컬/프라이빗 레지스트리용)
         ports:
         - containerPort: 3000
         resources:
