@@ -110,6 +110,8 @@ sudo ufw allow 80/tcp          # HTTP
 sudo ufw allow 443/tcp         # HTTPS
 sudo ufw allow 8472/udp        # Flannel VXLAN (노드 간 Pod 통신 - 반드시 필요)
 sudo ufw allow 51820/udp       # Flannel WireGuard (암호화 모드 사용 시)
+sudo ufw allow 22/tcp
+
 sudo ufw enable
 ```
 
@@ -121,6 +123,8 @@ sudo ufw allow 80/tcp          # HTTP
 sudo ufw allow 443/tcp         # HTTPS
 sudo ufw allow 8472/udp        # Flannel VXLAN (노드 간 Pod 통신 - 반드시 필요)
 sudo ufw allow 51820/udp       # Flannel WireGuard (암호화 모드 사용 시)
+sudo ufw allow 22/tcp
+
 sudo ufw enable
 ```
 
