@@ -472,8 +472,8 @@ spec:
     spec:
       containers:
       - name: spring
-        image: <your-spring-image>:<tag>  # 실제 이미지로 변경
-        imagePullPolicy: Always  # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
+        image: <your-spring-image>:<tag> # 실제 이미지로 변경
+        imagePullPolicy: IfNotPresent # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
         ports:
         - containerPort: 8080
         resources:
@@ -507,8 +507,8 @@ spec:
     spec:
       containers:
       - name: next
-        image: <your-next-image>:<tag>  # 실제 이미지로 변경
-        imagePullPolicy: Always  # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
+        image: <your-next-image>:<tag> # 실제 이미지로 변경
+        imagePullPolicy: IfNotPresent # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
         command: ["node"]
         args: ["server.js"]
         ports:
