@@ -460,7 +460,7 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: next  # next-svc selector와 반드시 일치
+      app: next
   template:
     metadata:
       labels:
@@ -468,10 +468,17 @@ spec:
     spec:
       containers:
       - name: next
-        image: <your-next-image>:<tag>  # 실제 이미지로 변경
-        imagePullPolicy: Always  # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
+        image: <your-next-image>:<tag>
+        imagePullPolicy: Always
         ports:
         - containerPort: 3000
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
 ```
 
 <br />
