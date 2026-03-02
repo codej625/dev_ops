@@ -214,7 +214,7 @@ echo "=== 1. 백업 디렉토리 생성 & 이미지 백업 ==="
 mkdir -p "$BACKUP_DIR"
 docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 && \
   docker save -o "$BACKUP_DIR/${APP_NAME}_latest.tar" "$IMAGE_NAME" || true
-# Import -> docker load -i $BACKUP_DIR/next_latest.tar
+# Import -> docker load -i $BACKUP_DIR/${APP_NAME}_latest.tar
 
 echo "=== 2. Registry Check ==="
 if [ ! "$(docker ps -q -f name=registry)" ]; then
