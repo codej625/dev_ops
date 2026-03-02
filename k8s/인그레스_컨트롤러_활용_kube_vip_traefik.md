@@ -628,6 +628,8 @@ metadata:
   namespace: default
   annotations:
     traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.middlewares: default-redirect-https@kubernetescrd
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
   ingressClassName: traefik
@@ -673,6 +675,8 @@ metadata:
   namespace: default
   annotations:
     traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.middlewares: default-redirect-https@kubernetescrd
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
   ingressClassName: traefik
@@ -703,7 +707,28 @@ spec:
 # 다만 가독성을 위해 구체적인 경로(/api)를 먼저, 범용 경로(/)를 나중에 작성하는 것을 권장.
 ```
 
+<br />
+
+`redirect-https-middleware.yaml`
+
+```yaml
+# Ingress에 HTTPS 설정만 되어 있으면 HTTP 요청은 매칭되는 라우트가 없어 404 나옴
+
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: default
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+```
+
+<br />
+
 ```zsh
+kubectl apply -f redirect-https-middleware.yaml
 kubectl apply -f ingress.yaml
 kubectl get ingress
 kubectl get svc
@@ -935,6 +960,7 @@ kubectl delete pod test-1 test-2
 <br />
 <br />
 <br />
+<br />
 
 * TIP
 
@@ -962,30 +988,23 @@ ex) PostgreSQL → jdbc:postgresql://database-service:5432/dbname
 └───────────────────────────────────────┘
            * NodePort는 ClusterIP를 포함
 
-내부 접속: database-service:5432 또는 10.43.123.45:5432 (ClusterIP)
-외부 접속: 192.168.0.30:30432 (NodePort)
+내부 접속 -> database-service:5432 또는 10.43.123.45:5432 (ClusterIP)
+외부 접속 -> 192.168.0.30:30432 (NodePort)
 ```
 
 <br />
 <br />
-
-```
-* 아이피 고정
-
-각 VM의 IP 고정은 공유기 DHCP 설정에서
-현재 사용 중인 MAC 주소에 IP를 예약(고정 할당)하는 방식이 권장됨.
-VM에서 별도 네트워크 설정을 하지 않아도 되므로 관리가 편함.
-```
-
-<br />
 <br />
 
-```
-* Ingress에 rate-limit 추가 고려 (Traefik 방식)
+`Ingress에 rate-limit 추가 고려 (Traefik 방식)`
 
-Traefik은 Middleware 리소스로 rate-limit을 설정함.
+```
+Traefik은 Middleware 리소스로 rate-limit을 설정한다.
+
 아래 YAML을 파일로 저장 후 kubectl apply 로 적용.
 ```
+
+<br />
 
 `middleware.yaml`
 
@@ -997,8 +1016,8 @@ metadata:
   namespace: default
 spec:
   rateLimit:
-    average: 10   # 초당 평균 허용 요청 수
-    burst: 50     # 순간 최대 허용 요청 수
+    average: 100   # 초당 평균 허용 요청 수
+    burst: 300     # 순간 최대 허용 요청 수
 ```
 
 ```zsh
@@ -1007,14 +1026,4 @@ kubectl apply -f middleware.yaml
 # Ingress annotation에 추가 (적용할 Ingress의 annotations 하위에 추가)
 # traefik.ingress.kubernetes.io/router.middlewares: default-rate-limit@kubernetescrd
 # 형식: <namespace>-<middleware-name>@kubernetescrd
-```
-
-<br />
-<br />
-
-```
-* Minimal (최소 설치) -> Ubuntu Server (표준 설치)
-
-sudo unminimize 명령어를 실행하면,
-Ubuntu Minimal Install (최소 설치) 상태에서 표준 Ubuntu Server 환경과 동일한 수준의 패키지 셋이 설치된다.
 ```
