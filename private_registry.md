@@ -237,6 +237,7 @@ docker push "$IMAGE_NAME"
 
 echo "=== 5. Kubernetes 배포 ==="
 kubectl set image deployment/$APP_NAME $APP_NAME="$IMAGE_NAME"
+kubectl rollout restart deployment/$APP_NAME
 
 if kubectl rollout status deployment/$APP_NAME --timeout=60s; then
   echo "[성공] $APP_NAME 배포가 완료되었습니다."
