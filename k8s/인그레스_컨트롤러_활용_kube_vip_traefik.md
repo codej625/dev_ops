@@ -578,7 +578,7 @@ kubectl get endpoints next-svc  # Pod와 연결 확인
 <br />
 <br />
 
-11. IngressClass (Traefik, 필요 시)
+11. IngressClass (IngressRoute 방식 사용 시 IngressClass 불필요)
 
 `ingressclass-traefik.yaml`
 
@@ -602,6 +602,8 @@ kubectl get ingressclass
 
 # traefik 항목이 없을 때만 실행
 kubectl apply -f ingressclass-traefik.yaml
+
+# Ingress 리소스 방식 사용 시에만 필요
 ```
 
 <br />
@@ -621,90 +623,92 @@ kubectl get clusterissuer letsencrypt-prod
 `ingress.yaml`
 
 ```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+# 서브도메인으로 나누기
+
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
-  name: main-ingress
+  name: main-ingressroute
   namespace: default
-  annotations:
-    traefik.ingress.kubernetes.io/router.tls: "true"
-    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
-    traefik.ingress.kubernetes.io/router.middlewares: default-redirect-https@kubernetescrd
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
-  ingressClassName: traefik
+  entryPoints:
+    - web
+  routes:
+  - match: Host(`app.example.com`) || Host(`api.example.com`)
+    kind: Rule
+    middlewares:
+    - name: redirect-https
+    services:
+    - name: next-svc
+      port: 3000
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: main-ingressroute-tls
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+  - match: Host(`app.example.com`)
+    kind: Rule
+    services:
+    - name: next-svc
+      port: 3000
+  - match: Host(`api.example.com`)
+    kind: Rule
+    services:
+    - name: spring-svc
+      port: 8080
   tls:
-  - hosts:
-    # A 레코드를 두 개 (또는 서브도메인 두 개)
-    # 두 도메인을 하나의 secretName으로 묶으면 SAN 2개짜리 인증서가 발급됨
-    - app.example.com
-    - api.example.com
     secretName: example-tls
-  rules:
-  - host: app.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: next-svc
-            port:
-              number: 3000
-  - host: api.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: spring-svc
-            port:
-              number: 8080
 ```
 
 <br />
 
-`Ingress – 경로로 나누기 (같은 도메인)`
 
 ```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: main-ingress
-  namespace: default
-  annotations:
-    traefik.ingress.kubernetes.io/router.tls: "true"
-    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
-    traefik.ingress.kubernetes.io/router.middlewares: default-redirect-https@kubernetescrd
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-spec:
-  ingressClassName: traefik
-  tls:
-  - hosts:
-    - example.com
-    secretName: example-tls
-  rules:
-  - host: example.com
-    http:
-      paths:
-      - path: /api
-        pathType: Prefix
-        backend:
-          service:
-            name: spring-svc
-            port:
-              number: 8080
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: next-svc
-            port:
-              number: 3000
+# 경로로 나누기 (같은 도메인)
 
-# Traefik은 경로 길이 기준으로 자동 우선순위를 매기므로 순서에 덜 민감함.
-# 다만 가독성을 위해 구체적인 경로(/api)를 먼저, 범용 경로(/)를 나중에 작성하는 것을 권장.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: main-ingressroute
+  namespace: default
+spec:
+  entryPoints:
+    - web
+  routes:
+  - match: Host(`example.com`)
+    kind: Rule
+    middlewares:
+    - name: redirect-https
+    services:
+    - name: next-svc
+      port: 3000
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: main-ingressroute-tls
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+  - match: Host(`example.com`) && PathPrefix(`/api`)
+    kind: Rule
+    services:
+    - name: spring-svc
+      port: 8080
+  - match: Host(`example.com`)
+    kind: Rule
+    services:
+    - name: next-svc
+      port: 3000
+  tls:
+    secretName: example-tls
 ```
 
 <br />
@@ -714,7 +718,7 @@ spec:
 ```yaml
 # Ingress에 HTTPS 설정만 되어 있으면 HTTP 요청은 매칭되는 라우트가 없어 404 나옴
 
-apiVersion: traefik.containo.us/v1alpha1
+apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: redirect-https
@@ -723,23 +727,46 @@ spec:
   redirectScheme:
     scheme: https
     permanent: true
+    port: "443"
+```
+
+<br />
+
+`certificate.yaml`
+
+```yaml
+# IngressRoute 사용 시 인증서 직접 발급
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: example-tls
+  namespace: default
+spec:
+  secretName: example-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - example.com
 ```
 
 <br />
 
 ```zsh
+# ⚠️ IngressRoute는 cert-manager 어노테이션이 없으므로 인증서 자동 발급이 안 됨
+# 인증서는 기존 Ingress 방식으로 먼저 발급받거나 Certificate 리소스로 직접 발급 필요
+# kubectl get certificate -A 로 인증서 확인 후 적용할 것
+
+kubectl apply -f certificate.yaml
+kubectl get certificate -A -w # READY: True 될 때까지 대기
+
 kubectl apply -f redirect-https-middleware.yaml
-kubectl apply -f ingress.yaml
-kubectl get ingress
-kubectl get svc
+kubectl apply -f ingressroute.yaml
 
-# 인증서 발급 진행 확인 (Ingress apply 후 자동 시작, 최대 2-3분 소요)
-# READY: False → 발급 진행 중 / READY: True → 발급 완료
-kubectl get certificate -A -w
-# Ctrl+C 로 종료
-
-# 발급이 오래 걸리거나 실패 시 상세 확인
-kubectl describe certificate example-tls -n default
+# 확인
+kubectl get ingressroute -n default
+kubectl get middleware -n default
 ```
 
 ```zsh
@@ -848,9 +875,9 @@ spec:
 ```
 
 ```zsh
-# ⚠️ 위 Certificate 리소스는 Ingress에 cert-manager 어노테이션이 있으면 자동 생성됨.
+# ⚠️ IngressRoute 방식에서는 cert-manager 어노테이션이 없으므로 Certificate 리소스로 직접 관리.
 # 갱신 시점만 바꾸고 싶은 경우에만 위 YAML로 수동 관리.
-# 일반적으로는 Ingress 어노테이션 방식(12번 항목)으로도 자동 갱신이 정상 동작함.
+# 일반적으로는 Certificate 리소스가 있으면 cert-manager가 자동 갱신함.
 ```
 
 <br />
@@ -861,7 +888,7 @@ spec:
 
 ```zsh
 kubectl get all -A
-kubectl get ingress -A
+kubectl get ingressroute -A
 kubectl get svc -n kube-system traefik
 kubectl get certificate -A
 kubectl logs -n kube-system -l app.kubernetes.io/name=traefik --tail=100
@@ -1023,7 +1050,6 @@ spec:
 ```zsh
 kubectl apply -f middleware.yaml
 
-# Ingress annotation에 추가 (적용할 Ingress의 annotations 하위에 추가)
-# traefik.ingress.kubernetes.io/router.middlewares: default-rate-limit@kubernetescrd
-# 형식: <namespace>-<middleware-name>@kubernetescrd
+# IngressRoute의 middlewares에 추가
+# - name: rate-limit
 ```
