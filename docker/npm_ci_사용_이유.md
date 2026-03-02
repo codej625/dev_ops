@@ -1,8 +1,25 @@
 # 도커 파일을 만들 때 쿨팁 모음
 
-<br /><br />
+<br />
+<br />
 
-1. npm install 대신 npm ci를 사용하자.
+* Dockerfile에서 npm ci를 쓰는 이유?
+
+---
+
+```
+Dockerfile에서 npm ci를 쓰는 이유는
+항상 같은 버전으로 재현 가능한 빌드를 보장하기 위해서이다.
+
+자세한 건 밑에 표에서 확인
+```
+
+<br />
+<br />
+<br />
+<br />
+
+1. npm install 대신 npm ci를 사용하는 이유
 
 <br />
 
@@ -17,4 +34,33 @@
 | **실패 조건**      | `package.json`이 `package-lock.json`와 일치하지 않아도 설치 가능                                                | `package.json`이 `package-lock.json`와 일치하지 않으면 실패                                                 |
 | **사용 사례**      | 로컬 개발 환경에서 패키지를 추가하거나 관리할 때 사용                                                           | CI/CD 환경에서 일관된 설치를 보장하기 위해 사용                                                             |
 
-<br /><br /><br />
+<br />
+<br />
+<br />
+
+2. Dockerfile 사용 예시
+
+```docker
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+
+# 여기!
+RUN npm ci
+
+COPY . .
+
+RUN npm run build
+
+CMD ["node", "server.js"]
+```
+
+<br />
+
+| 환경 | 명령어 | 이유 |
+| :--- | :--- | :--- |
+| **로컬 개발** | `npm install` | 패키지 추가/변경할 때 |
+| **Dockerfile** | `npm ci` | 빌드할 때, 재현 가능한 이미지 생성 |
+| **GitHub Actions** | `npm ci` | CI/CD에서 일관된 테스트/빌드 보장 |
