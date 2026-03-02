@@ -207,9 +207,16 @@ set -e
 APP_NAME="next"
 REGISTRY="192.168.0.219:5000"
 IMAGE_NAME="$REGISTRY/$APP_NAME:latest"
+BACKUP_DIR="/home/codej625/backups"
 GIT_PATH="/home/codej625/workspace/pro_one/front-end"
 
-echo "=== 1. Registry Check ==="
+echo "=== 1. 백업 디렉토리 생성 & 이미지 백업 ==="
+mkdir -p "$BACKUP_DIR"
+docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 && \
+  docker save -o "$BACKUP_DIR/${APP_NAME}_latest.tar" "$IMAGE_NAME" || true
+# Import -> docker load -i $BACKUP_DIR/next_latest.tar
+
+echo "=== 2. Registry Check ==="
 if [ ! "$(docker ps -q -f name=registry)" ]; then
     if [ "$(docker ps -aq -f status=exited -f name=registry)" ]; then
         docker start registry
@@ -220,15 +227,15 @@ if [ ! "$(docker ps -q -f name=registry)" ]; then
     fi
 fi
 
-echo "=== 2. Git Pull ==="
+echo "=== 3. Git Pull ==="
 cd "$GIT_PATH" || exit 1
 git pull
 
-echo "=== 3. Docker Build ==="
+echo "=== 4. Docker Build ==="
 docker build --no-cache -t "$IMAGE_NAME" .
 docker push "$IMAGE_NAME"
 
-echo "=== 4. Kubernetes 배포 ==="
+echo "=== 5. Kubernetes 배포 ==="
 kubectl set image deployment/$APP_NAME $APP_NAME="$IMAGE_NAME"
 
 if kubectl rollout status deployment/$APP_NAME --timeout=60s; then
@@ -240,15 +247,16 @@ else
   exit 1
 fi
 
-echo "=== 5. Docker 이미지 정리 ==="
+echo "=== 6. Docker 이미지 정리 ==="
 docker rmi "$IMAGE_NAME" || true
 docker system prune -a -f
 docker builder prune -a -f
 
-echo "=== 6. Registry 가비지 컬렉션 실행 ==="
+echo "=== 7. Registry 가비지 컬렉션 실행 ==="
 docker exec registry bin/registry garbage-collect /etc/docker/registry/config.yml
 docker restart registry
 
+echo "=== 8. 완료 ==="
 ```
 
 ```zsh
