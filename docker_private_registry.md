@@ -232,7 +232,7 @@ cd "$GIT_PATH" || exit 1
 git pull
 
 echo "=== 4. Docker Build ==="
-docker build -t "$IMAGE_NAME" .
+docker buildx build -t "$IMAGE_NAME" .
 docker push "$IMAGE_NAME"
 
 echo "=== 5. Kubernetes 배포 ==="
