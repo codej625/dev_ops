@@ -232,7 +232,7 @@ cd "$GIT_PATH" || exit 1
 git pull
 
 echo "=== 4. Docker Build ==="
-docker build --no-cache -t "$IMAGE_NAME" .
+docker build -t "$IMAGE_NAME" .
 docker push "$IMAGE_NAME"
 
 echo "=== 5. Kubernetes 배포 ==="
@@ -254,7 +254,9 @@ docker system prune -a -f
 docker builder prune -a -f
 
 echo "=== 7. Registry 가비지 컬렉션 실행 ==="
-docker exec registry bin/registry garbage-collect /etc/docker/registry/config.yml
+docker exec registry bin/registry garbage-collect \
+  --delete-untagged \
+  /etc/docker/registry/config.yml
 docker restart registry
 
 echo "=== 8. 완료 ==="
