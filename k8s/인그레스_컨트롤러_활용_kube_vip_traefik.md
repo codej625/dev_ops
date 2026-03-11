@@ -572,6 +572,42 @@ spec:
 
 <br />
 
+`nest-secret.yaml`
+
+```yaml
+# 프로덕션용 시크릿 예시.
+# 1. 이 파일을 nest-secret.yaml 로 복사한 뒤 실제 값으로 채우세요.
+# 2. nest-secret.yaml 은 .gitignore에 넣고 커밋하지 마세요.
+# 3. 적용: kubectl apply -f nest-secret.yaml
+#
+# 또는 한 번에 생성:
+#   kubectl create secret generic nest-secret \
+#     --from-literal=NODE_ENV=production \
+#     --from-literal=PORT=4000 \
+#     --from-literal=DATABASE_URL='postgresql://codej625:0625@healthapp.shop:5431/pro_one?schema=public' \
+#     --from-literal=JWT_SECRET='운영용-강한-랜덤-문자열' \
+#     --from-literal=CORS_ORIGIN='https://healthapp.shop' \
+#     -n default
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nest-secret
+  namespace: default
+type: Opaque
+stringData:
+  NODE_ENV: "production"
+  PORT: "4000"
+  # PostgreSQL 연결 문자열 (현재 개발/운영에서 쓰는 DB)
+  DATABASE_URL: "postgresql://{id}:{password}@{domain}:{port}/{database_name}?schema=public"
+  # JWT 서명용 시크릿 (운영에서 반드시 강한 랜덤 문자열로 변경)
+  JWT_SECRET: "REPLACE_WITH_STRONG_RANDOM_SECRET"
+  # CORS 허용 오리진 (프론트엔드 URL, 쉼표 여러 개 가능)
+  CORS_ORIGIN: "https://healthapp.shop"
+```
+
+<br />
+
 `next-deployment.yaml (예시)`
 
 ```yaml
@@ -674,6 +710,7 @@ spec:
 <br />
 
 ```zsh
+kubectl apply -f nest-secret.yaml
 kubectl apply -f nest-deployment.yaml
 kubectl apply -f nest-svc.yaml
 kubectl apply -f nest-pdb.yaml
