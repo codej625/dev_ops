@@ -204,17 +204,21 @@ git pull -> docker build -> registry push -> kubectl 배포까지
 
 set -e
 
-APP_NAME="next"
 REGISTRY="192.168.0.219:5000"
-IMAGE_NAME="$REGISTRY/$APP_NAME:latest"
 BACKUP_DIR="/home/codej625/backups"
-GIT_PATH="/home/codej625/workspace/pro_one/front-end"
+GIT_ROOT="/home/codej625/workspace/pro_one"
+FRONTEND_PATH="$GIT_ROOT/front-end"
+BACKEND_PATH="$GIT_ROOT/back-end"
+
+# 프론트(next), 백(nest)
+NEXT_IMAGE="$REGISTRY/next:latest"
+NEST_IMAGE="$REGISTRY/nest:latest"
 
 echo "=== 1. 백업 디렉토리 생성 & 이미지 백업 ==="
 mkdir -p "$BACKUP_DIR"
-docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 && \
-  docker save -o "$BACKUP_DIR/${APP_NAME}_latest.tar" "$IMAGE_NAME" || true
-# Import -> docker load -i $BACKUP_DIR/${APP_NAME}_latest.tar
+docker image inspect "$NEXT_IMAGE" >/dev/null 2>&1 && docker save -o "$BACKUP_DIR/next_latest.tar" "$NEXT_IMAGE" || true
+docker image inspect "$NEST_IMAGE" >/dev/null 2>&1 && docker save -o "$BACKUP_DIR/nest_latest.tar" "$NEST_IMAGE" || true
+# Import -> docker load -i $BACKUP_DIR/next_latest.tar
 
 echo "=== 2. Registry Check ==="
 if [ ! "$(docker ps -q -f name=registry)" ]; then
@@ -228,28 +232,38 @@ if [ ! "$(docker ps -q -f name=registry)" ]; then
 fi
 
 echo "=== 3. Git Pull ==="
-cd "$GIT_PATH" || exit 1
+cd "$GIT_ROOT" || exit 1
 git pull
 
-echo "=== 4. Docker Build ==="
-docker buildx build -t "$IMAGE_NAME" .
-docker push "$IMAGE_NAME"
+echo "=== 4. Docker Build (프론트 + 백엔드) ==="
+docker build -t "$NEXT_IMAGE" "$FRONTEND_PATH"
+docker push "$NEXT_IMAGE"
+docker build -t "$NEST_IMAGE" "$BACKEND_PATH"
+docker push "$NEST_IMAGE"
 
 echo "=== 5. Kubernetes 배포 ==="
-kubectl set image deployment/$APP_NAME $APP_NAME="$IMAGE_NAME"
-kubectl rollout restart deployment/$APP_NAME
-
-if kubectl rollout status deployment/$APP_NAME --timeout=60s; then
-  echo "[성공] $APP_NAME 배포가 완료되었습니다."
+kubectl set image deployment/next next="$NEXT_IMAGE"
+kubectl rollout restart deployment/next
+if kubectl rollout status deployment/next --timeout=60s; then
+  echo "[성공] next 배포 완료."
 else
-  echo "[실패] $APP_NAME 배포 중 문제가 발생했습니다."
-  echo "롤백 시도..."
-  kubectl rollout undo deployment/$APP_NAME
+  echo "[실패] next 배포 실패. 롤백..."
+  kubectl rollout undo deployment/next
+  exit 1
+fi
+
+kubectl set image deployment/nest nest="$NEST_IMAGE"
+kubectl rollout restart deployment/nest
+if kubectl rollout status deployment/nest --timeout=60s; then
+  echo "[성공] nest 배포 완료."
+else
+  echo "[실패] nest 배포 실패. 롤백..."
+  kubectl rollout undo deployment/nest
   exit 1
 fi
 
 echo "=== 6. Docker 이미지 정리 ==="
-docker rmi "$IMAGE_NAME" || true
+docker rmi "$NEXT_IMAGE" "$NEST_IMAGE" || true
 docker system prune -a -f
 docker builder prune -a -f
 
