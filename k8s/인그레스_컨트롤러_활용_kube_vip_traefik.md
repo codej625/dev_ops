@@ -737,10 +737,10 @@ kubectl get clusterissuer letsencrypt-prod
 `ingress.yaml`
 
 ```yaml
-# 서브도메인으로 나누기
+# 경로로 나누기 - strip-api-prefix 미들웨어 포함 버전
 
 # ----- HTTP (80) -----
-# healthapp.shop → HTTPS로 리다이렉트 후 next-svc(프론트)로
+# example.com → HTTPS로 리다이렉트 후 next-svc(프론트)로
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -750,7 +750,7 @@ spec:
   entryPoints:
     - web
   routes:
-  - match: Host(`healthapp.shop`)
+  - match: Host(`example.com`)
     kind: Rule
     middlewares:
     - name: redirect-https
@@ -770,20 +770,20 @@ spec:
   entryPoints:
     - websecure
   routes:
-  - match: Host(`healthapp.shop`) && PathPrefix(`/api`)
+  - match: Host(`example.com`) && PathPrefix(`/api`)
     kind: Rule
     middlewares:
     - name: strip-api-prefix
     services:
     - name: nest-svc
       port: 4000
-  - match: Host(`healthapp.shop`)
+  - match: Host(`example.com`)
     kind: Rule
     services:
     - name: next-svc
       port: 3000
   tls:
-    secretName: proone-tls
+    secretName: example-tls
 
 ```
 
@@ -791,7 +791,8 @@ spec:
 
 
 ```yaml
-# 경로로 나누기 (같은 도메인)
+# 경로로 나누기 - 미들웨어 없이 /api 그대로 전달하는 버전
+# (백엔드가 /api 접두사를 직접 처리하는 경우)
 
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -823,7 +824,7 @@ spec:
     kind: Rule
     services:
     - name: nest-svc
-      port: 8080
+      port: 4000
   - match: Host(`example.com`)
     kind: Rule
     services:
@@ -867,8 +868,8 @@ metadata:
   namespace: default
 spec:
   replacePathRegex:
-    regex: "^/api(.*)"
-    replacement: "${1}"
+    regex: "^/api/?(.*)"
+    replacement: "/${1}"
 ```
 
 <br />
@@ -1012,7 +1013,7 @@ spec:
   dnsNames:
   - app.example.com
   - api.example.com
-  renewBefore: 720h  # 만료 30일 전 갱신 (기본값). 더 일찍 갱신하려면 값을 높임 (예: 1440h = 60일 전)
+  renewBefore: 720h  # 만료 30일 전 갱신 (예시값). 더 일찍 갱신하려면 값을 높임 (예: 1440h = 60일 전)
 ```
 
 ```zsh
