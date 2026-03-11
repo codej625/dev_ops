@@ -283,6 +283,7 @@ docker run --network host --rm ghcr.io/kube-vip/kube-vip:v0.8.7 \
   --arp \
   --leaderElection \
   --upnp=false | kubectl apply -f -
+# --upnp=false 해당 옵션이 문제 될 시 삭제
 ```
 
 ```zsh
@@ -444,46 +445,129 @@ dig healthapp.shop
 
 ```zsh
 # ⚠️ Service는 selector로 Pod를 찾습니다.
-# spring-svc → app: spring 라벨이 있는 Pod
+# nest-svc → app: nest 라벨이 있는 Pod
 # next-svc   → app: next 라벨이 있는 Pod
 # Deployment가 먼저 배포되어 있어야 Endpoint가 연결됩니다.
-# Endpoint 확인: kubectl get endpoints spring-svc
+# Endpoint 확인: kubectl get endpoints nest-svc
 # Endpoint가 <none> 이면 Deployment가 없거나 라벨이 일치하지 않는 것
 ```
 
 <br />
 
-`spring-deployment.yaml (예시)`
+`nest-deployment.yaml`
 
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: spring
+  name: nest
   namespace: default
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
-      app: spring  # spring-svc selector와 반드시 일치
+      app: nest
   template:
     metadata:
       labels:
-        app: spring
+        app: nest
     spec:
       containers:
-      - name: spring
-        image: <your-spring-image>:<tag> # 실제 이미지로 변경
-        imagePullPolicy: IfNotPresent # 항상 최신 이미지 pull (로컬/프라이빗 레지스트리 사용 시 특히 중요)
+      - name: nest
+        image: 192.168.x.x:5000/nest:latest
+        imagePullPolicy: Always
+        command: ["node"]
+        args: ["dist/main.js"]
         ports:
-        - containerPort: 8080
+        - containerPort: 4000
+        envFrom:
+        - secretRef:
+            name: nest-secret
         resources:
           requests:
-            cpu: "500m"
-            memory: "512Mi"
+            cpu: "250m"
+            memory: "256Mi"
           limits:
-            cpu: "1500m"
-            memory: "1536Mi"
+            cpu: "1000m"
+            memory: "1Gi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 4000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 4000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+```
+
+<br />
+
+`nest-svc.yaml`
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nest-svc
+  namespace: default
+  labels:
+    app: nest
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4000
+    targetPort: 4000
+    protocol: TCP
+    name: http
+  selector:
+    app: nest
+```
+
+<br />
+
+`nest-hpa.yaml`
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nest-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nest
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+```
+
+<br />
+
+`nest-pdb.yaml`
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nest-pdb
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: nest
 ```
 
 <br />
@@ -497,7 +581,7 @@ metadata:
   name: next
   namespace: default
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: next
@@ -508,8 +592,10 @@ spec:
     spec:
       containers:
       - name: next
-        image: <your-next-image>:<tag> # 실제 이미지로 변경
-        imagePullPolicy: IfNotPresent  # 이미 있으면 pull 생략 (로컬/프라이빗 레지스트리용)
+        image: 192.168.x.x:5000/next:latest
+        imagePullPolicy: Always
+        command: ["node"]
+        args: ["server.js"]
         ports:
         - containerPort: 3000
         resources:
@@ -519,27 +605,6 @@ spec:
           limits:
             cpu: "1000m"
             memory: "1Gi"
-```
-
-<br />
-
-`spring-svc.yaml`
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: spring-svc
-  namespace: default
-spec:
-  type: ClusterIP
-  selector:
-    app: spring
-  ports:
-  - name: http
-    port: 8080
-    targetPort: 8080
-    protocol: TCP
 ```
 
 <br />
@@ -563,16 +628,64 @@ spec:
     protocol: TCP
 ```
 
+<br />
+
+`next-hpa.yaml`
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: next-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: next # Deployment label과 반드시 일치
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+```
+
+<br />
+
+`next-pdb.yaml`
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: next-pdb
+  namespace: default
+spec:
+  minAvailable: 1 # 최소 1개는 항상 살아있어야 함
+  selector:
+    matchLabels:
+      app: next # Deployment label과 반드시 일치
+```
+
+<br />
+
 ```zsh
-kubectl apply -f spring-deployment.yaml
-kubectl apply -f spring-svc.yaml
-kubectl get svc spring-svc
-kubectl get endpoints spring-svc  # Pod와 연결 확인
+kubectl apply -f nest-deployment.yaml
+kubectl apply -f nest-svc.yaml
+kubectl apply -f nest-pdb.yaml
+kubectl apply -f nest-hpa.yaml
+kubectl get svc nest-svc # Pod와 연결 확인
 
 kubectl apply -f next-deployment.yaml
 kubectl apply -f next-svc.yaml
+kubectl apply -f next-pdb.yaml
+kubectl apply -f next-hpa.yaml
 kubectl get svc next-svc
-kubectl get endpoints next-svc  # Pod와 연결 확인
+kubectl get endpoints next-svc # Pod와 연결 확인
 ```
 
 <br />
@@ -626,6 +739,8 @@ kubectl get clusterissuer letsencrypt-prod
 ```yaml
 # 서브도메인으로 나누기
 
+# ----- HTTP (80) -----
+# healthapp.shop → HTTPS로 리다이렉트 후 next-svc(프론트)로
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -635,7 +750,7 @@ spec:
   entryPoints:
     - web
   routes:
-  - match: Host(`app.example.com`) || Host(`api.example.com`)
+  - match: Host(`healthapp.shop`)
     kind: Rule
     middlewares:
     - name: redirect-https
@@ -643,6 +758,9 @@ spec:
     - name: next-svc
       port: 3000
 ---
+# ----- HTTPS (443) -----
+# - /api/* → nest-svc(백엔드). strip-api-prefix로 /api 제거 후 전달 (예: /api/auth/login → /auth/login)
+# - 그 외 → next-svc(프론트)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -652,18 +770,21 @@ spec:
   entryPoints:
     - websecure
   routes:
-  - match: Host(`app.example.com`)
+  - match: Host(`healthapp.shop`) && PathPrefix(`/api`)
+    kind: Rule
+    middlewares:
+    - name: strip-api-prefix
+    services:
+    - name: nest-svc
+      port: 4000
+  - match: Host(`healthapp.shop`)
     kind: Rule
     services:
     - name: next-svc
       port: 3000
-  - match: Host(`api.example.com`)
-    kind: Rule
-    services:
-    - name: spring-svc
-      port: 8080
   tls:
-    secretName: example-tls
+    secretName: proone-tls
+
 ```
 
 <br />
@@ -701,7 +822,7 @@ spec:
   - match: Host(`example.com`) && PathPrefix(`/api`)
     kind: Rule
     services:
-    - name: spring-svc
+    - name: nest-svc
       port: 8080
   - match: Host(`example.com`)
     kind: Rule
@@ -729,6 +850,25 @@ spec:
     scheme: https
     permanent: true
     port: "443"
+```
+
+<br />
+
+`strip-api-prefix-middleware.yaml`
+
+```yaml
+# Traefik 미들웨어: 요청 경로에서 /api 제거
+# 프론트는 /api/auth/login 으로 보내고, 백엔드(nest)는 /auth/login 만 받도록 함.
+# 적용: ingressroute.yaml 의 /api 라우트에서 이 미들웨어 참조.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-api-prefix
+  namespace: default
+spec:
+  replacePathRegex:
+    regex: "^/api(.*)"
+    replacement: "${1}"
 ```
 
 <br />
@@ -922,7 +1062,7 @@ kubectl logs -n cert-manager -l app=cert-manager --tail=100
 
 ```zsh
 # Endpoint 확인 - <none> 이면 Deployment가 없거나 라벨 불일치
-kubectl get endpoints spring-svc
+kubectl get endpoints nest-svc
 kubectl get endpoints next-svc
 
 # Pod 상태 확인
