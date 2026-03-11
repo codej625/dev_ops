@@ -281,7 +281,8 @@ docker run --network host --rm ghcr.io/kube-vip/kube-vip:v0.8.7 \
   --controlplane \
   --services \
   --arp \
-  --leaderElection | kubectl apply -f -
+  --leaderElection \
+  --upnp=false | kubectl apply -f -
 ```
 
 ```zsh
