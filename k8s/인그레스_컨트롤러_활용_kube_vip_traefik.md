@@ -600,6 +600,8 @@ stringData:
   PORT: "4000"
   # PostgreSQL 연결 문자열 (현재 개발/운영에서 쓰는 DB)
   DATABASE_URL: "postgresql://{id}:{password}@{domain}:{port}/{database_name}?schema=public"
+  # 디비 연결 시 지연될 수 있을 때 사용 (커넥션 타임아웃 옵션)
+  # DATABASE_URL: "postgresql://{id}:{password}@{domain}:{port}/{database_name}?schema=public&connect_timeout=30"
   # JWT 서명용 시크릿 (운영에서 반드시 강한 랜덤 문자열로 변경)
   JWT_SECRET: "REPLACE_WITH_STRONG_RANDOM_SECRET"
   # CORS 허용 오리진 (프론트엔드 URL, 쉼표 여러 개 가능)
