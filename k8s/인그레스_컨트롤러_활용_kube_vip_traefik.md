@@ -610,7 +610,21 @@ stringData:
 
 <br />
 
-`next-deployment.yaml (예시)`
+`next-configmap.yaml`
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: next-config
+  namespace: default
+data:
+  API_SERVER_URL: "https://healthapp.shop"
+```
+
+<br />
+
+`next-deployment.yaml`
 
 ```yaml
 apiVersion: apps/v1
@@ -630,6 +644,9 @@ spec:
     spec:
       containers:
       - name: next
+        envFrom:
+          - configMapRef:
+              name: next-config
         image: 192.168.x.x:5000/next:latest
         imagePullPolicy: Always
         command: ["node"]
@@ -719,6 +736,7 @@ kubectl apply -f nest-pdb.yaml
 kubectl apply -f nest-hpa.yaml
 kubectl get svc nest-svc # Pod와 연결 확인
 
+kubectl apply -f next-configmap.yaml
 kubectl apply -f next-deployment.yaml
 kubectl apply -f next-svc.yaml
 kubectl apply -f next-pdb.yaml
