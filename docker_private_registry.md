@@ -210,7 +210,6 @@ GIT_ROOT="/home/codej625/workspace/pro_one"
 FRONTEND_PATH="$GIT_ROOT/front-end"
 BACKEND_PATH="$GIT_ROOT/back-end"
 
-# 프론트(next), 백(nest)
 NEXT_IMAGE="$REGISTRY/next:latest"
 NEST_IMAGE="$REGISTRY/nest:latest"
 
@@ -218,7 +217,6 @@ echo "=== 1. 백업 디렉토리 생성 & 이미지 백업 ==="
 mkdir -p "$BACKUP_DIR"
 docker image inspect "$NEXT_IMAGE" >/dev/null 2>&1 && docker save -o "$BACKUP_DIR/next_latest.tar" "$NEXT_IMAGE" || true
 docker image inspect "$NEST_IMAGE" >/dev/null 2>&1 && docker save -o "$BACKUP_DIR/nest_latest.tar" "$NEST_IMAGE" || true
-# Import -> docker load -i $BACKUP_DIR/next_latest.tar
 
 echo "=== 2. Registry Check ==="
 if [ ! "$(docker ps -q -f name=registry)" ]; then
@@ -236,25 +234,29 @@ cd "$GIT_ROOT" || exit 1
 git pull
 
 echo "=== 4. Docker Build (프론트 + 백엔드) ==="
-docker build -t "$NEXT_IMAGE" "$FRONTEND_PATH"
+docker build -t "$NEXT_IMAGE" "$FRONTEND_PATH" &
+docker build -t "$NEST_IMAGE" "$BACKEND_PATH" &
+wait
 docker push "$NEXT_IMAGE"
-docker build -t "$NEST_IMAGE" "$BACKEND_PATH"
 docker push "$NEST_IMAGE"
 
 echo "=== 5. Kubernetes 배포 ==="
 kubectl set image deployment/next next="$NEXT_IMAGE"
-kubectl rollout restart deployment/next
-if kubectl rollout status deployment/next --timeout=60s; then
+kubectl rollout restart deployment/next &
+
+kubectl set image deployment/nest nest="$NEST_IMAGE"
+kubectl rollout restart deployment/nest &
+
+if kubectl rollout status deployment/next --timeout=120s; then
   echo "[성공] next 배포 완료."
 else
   echo "[실패] next 배포 실패. 롤백..."
   kubectl rollout undo deployment/next
+  kubectl rollout undo deployment/nest
   exit 1
 fi
 
-kubectl set image deployment/nest nest="$NEST_IMAGE"
-kubectl rollout restart deployment/nest
-if kubectl rollout status deployment/nest --timeout=60s; then
+if kubectl rollout status deployment/nest --timeout=120s; then
   echo "[성공] nest 배포 완료."
 else
   echo "[실패] nest 배포 실패. 롤백..."
