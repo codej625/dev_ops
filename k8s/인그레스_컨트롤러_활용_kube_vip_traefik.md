@@ -542,7 +542,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: nest
-  minReplicas: 2
+  minReplicas: 1
   maxReplicas: 4
   metrics:
     - type: Resource
@@ -660,6 +660,26 @@ spec:
           limits:
             cpu: "1000m"
             memory: "1Gi"
+        # 배포 시 준비될때까지 트래픽 안받음
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        # 운영중 먹통되면 자동 재시작
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+  # 배포 전략
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # 배포중 Pod 1개 추가로 먼저 띄움
+      maxUnavailable: 0  # 기존 Pod는 새 Pod 준비되기 전까지 안죽임
 ```
 
 <br />
@@ -698,7 +718,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: next # Deployment label과 반드시 일치
-  minReplicas: 2
+  minReplicas: 1
   maxReplicas: 4
   metrics:
   - type: Resource
