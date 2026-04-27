@@ -467,6 +467,11 @@ spec:
   selector:
     matchLabels:
       app: nest
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
@@ -851,17 +856,19 @@ spec:
     kind: Rule
     middlewares:
     - name: strip-api-prefix
+    - name: rate-limit
     services:
     - name: nest-svc
       port: 4000
   - match: Host(`example.com`)
     kind: Rule
+    middlewares:
+    - name: rate-limit
     services:
     - name: next-svc
       port: 3000
   tls:
     secretName: example-tls
-
 ```
 
 <br />
