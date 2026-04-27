@@ -463,7 +463,7 @@ metadata:
   name: nest
   namespace: default
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: nest
@@ -633,7 +633,7 @@ metadata:
   name: next
   namespace: default
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: next
