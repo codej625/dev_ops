@@ -133,11 +133,31 @@ sudo ufw enable
 3. VM1에서 Master 1 설치
 
 ```zsh
+# 디렉토리 생성
+sudo mkdir -p /var/lib/rancher/k3s/server/manifests
+
+# Traefik 레플리카 2개 설정 파일 생성
+sudo tee /var/lib/rancher/k3s/server/manifests/traefik-config.yaml > /dev/null <<EOF
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    deployment:
+      replicas: 2
+EOF
+```
+
+```zsh
 # ServiceLB 비활성화 (kube-vip 사용), Traefik 유지, TLS SAN 추가 (IP는 VM IP에 맞게 변경 필요)
 curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=servicelb --tls-san=192.168.0.101" sh -
 
+# 노드 및 Traefik 파드 개수 확인 (2개가 떠야 함 )
 sudo systemctl status k3s
 kubectl get nodes
+kubectl get pods -n kube-system -l app.kubernetes.io/name=traefik
 
 # 워커 조인용 토큰 확인
 sudo cat /var/lib/rancher/k3s/server/node-token
