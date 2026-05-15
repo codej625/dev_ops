@@ -233,34 +233,33 @@ echo "=== 3. Git Pull ==="
 cd "$GIT_ROOT" || exit 1
 git pull
 
-echo "=== 4. Docker Build (프론트 + 백엔드) ==="
-docker build -t "$NEXT_IMAGE" "$FRONTEND_PATH" &
-docker build -t "$NEST_IMAGE" "$BACKEND_PATH" &
-wait
+echo "=== 4. Docker Build (순차 빌드) ==="
+docker build -t "$NEXT_IMAGE" "$FRONTEND_PATH"
 docker push "$NEXT_IMAGE"
+docker build -t "$NEST_IMAGE" "$BACKEND_PATH"
 docker push "$NEST_IMAGE"
 
 echo "=== 5. Kubernetes 배포 ==="
 kubectl set image deployment/next next="$NEXT_IMAGE"
-kubectl rollout restart deployment/next &
+kubectl rollout restart deployment/next
 
-kubectl set image deployment/nest nest="$NEST_IMAGE"
-kubectl rollout restart deployment/nest &
-
-if kubectl rollout status deployment/next --timeout=120s; then
+if kubectl rollout status deployment/next --timeout=360s; then
   echo "[성공] next 배포 완료."
 else
-  echo "[실패] next 배포 실패. 롤백..."
+  echo "[실패] next 배포 실패. next 롤백..."
   kubectl rollout undo deployment/next
-  kubectl rollout undo deployment/nest
   exit 1
 fi
 
-if kubectl rollout status deployment/nest --timeout=120s; then
+kubectl set image deployment/nest nest="$NEST_IMAGE"
+kubectl rollout restart deployment/nest
+
+if kubectl rollout status deployment/nest --timeout=360s; then
   echo "[성공] nest 배포 완료."
 else
-  echo "[실패] nest 배포 실패. 롤백..."
+  echo "[실패] nest 배포 실패. 전체 롤백..."
   kubectl rollout undo deployment/nest
+  kubectl rollout undo deployment/next
   exit 1
 fi
 
