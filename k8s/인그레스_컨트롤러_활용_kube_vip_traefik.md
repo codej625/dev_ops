@@ -483,20 +483,31 @@ metadata:
   name: nest
   namespace: default
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: nest
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxSurge: 1       # 배포중 Pod 1개 추가로 먼저 띄움
+      maxUnavailable: 0 # 기존 Pod는 새 Pod 준비되기 전까지 안죽임
   template:
     metadata:
       labels:
         app: nest
     spec:
+      # 동일 앱 replica를 서로 다른 노드에 강제 분산
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - nest
+              topologyKey: "kubernetes.io/hostname"
       containers:
       - name: nest
         image: 192.168.x.x:5000/nest:latest
@@ -510,22 +521,32 @@ spec:
             name: nest-secret
         resources:
           requests:
-            cpu: "250m"
-            memory: "256Mi"
+            cpu: "100m"
+            memory: "128Mi"
           limits:
             cpu: "1000m"
-            memory: "1Gi"
+            memory: "512Mi"
+        # 앱 초기화 완료 전까지 liveness/readiness 보호
+        # 초기화 로직 없으면 제거하고 livenessProbe initialDelaySeconds 복구
+        startupProbe:
+          httpGet:
+            path: /              # /health 엔드포인트 생기면 변경 권장
+            port: 4000
+          failureThreshold: 30   # 최대 30 * 10초 = 300초 대기
+          periodSeconds: 10
+        # 운영중 먹통되면 자동 재시작
         livenessProbe:
           httpGet:
-            path: /
+            path: /              # /health 엔드포인트 생기면 변경 권장
             port: 4000
-          initialDelaySeconds: 10
+          initialDelaySeconds: 0 # startupProbe 가 대신함
           periodSeconds: 10
+        # 배포 시 준비될때까지 트래픽 안받음
         readinessProbe:
           httpGet:
-            path: /
+            path: /              # /health 엔드포인트 생기면 변경 권장
             port: 4000
-          initialDelaySeconds: 5
+          initialDelaySeconds: 0 # startupProbe 가 대신함
           periodSeconds: 5
 ```
 
@@ -658,15 +679,32 @@ metadata:
   name: next
   namespace: default
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: next
+  # 배포 전략
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # 배포중 Pod 1개 추가로 먼저 띄움
+      maxUnavailable: 0  # 기존 Pod는 새 Pod 준비되기 전까지 안죽임
   template:
     metadata:
       labels:
         app: next
     spec:
+      # 동일 앱 replica를 서로 다른 노드에 강제 분산
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - next
+              topologyKey: "kubernetes.io/hostname"
       containers:
       - name: next
         envFrom:
@@ -680,31 +718,33 @@ spec:
         - containerPort: 3000
         resources:
           requests:
-            cpu: "250m"
+            cpu: "200m"
             memory: "256Mi"
           limits:
-            cpu: "1000m"
-            memory: "1Gi"
+            cpu: "1500m"  # SSR 렌더링 스파이크 대비 1코어 이상 허용
+            memory: "768Mi"
+        # 앱 초기화 완료 전까지 liveness/readiness 보호
+        # 초기화 로직 없으면 제거하고 livenessProbe initialDelaySeconds 복구
+        startupProbe:
+          httpGet:
+            path: /    # /health 엔드포인트 생기면 변경 권장
+            port: 3000
+          failureThreshold: 30  # 최대 30 * 10초 = 300초 대기
+          periodSeconds: 10
         # 배포 시 준비될때까지 트래픽 안받음
         readinessProbe:
           httpGet:
-            path: /
+            path: /    # /health 엔드포인트 생기면 변경 권장
             port: 3000
-          initialDelaySeconds: 5
+          initialDelaySeconds: 0  # startupProbe 가 대신함
           periodSeconds: 5
         # 운영중 먹통되면 자동 재시작
         livenessProbe:
           httpGet:
-            path: /
+            path: /    # /health 엔드포인트 생기면 변경 권장
             port: 3000
-          initialDelaySeconds: 10
+          initialDelaySeconds: 0  # startupProbe 가 대신함
           periodSeconds: 10
-  # 배포 전략
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1        # 배포중 Pod 1개 추가로 먼저 띄움
-      maxUnavailable: 0  # 기존 Pod는 새 Pod 준비되기 전까지 안죽임
 ```
 
 <br />
