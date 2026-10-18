@@ -225,7 +225,28 @@ sudo ufw enable
 
 <br />
 
-`5) DB VM (VM4 - 4 vCPU / 16GB RAM) PostgreSQL 필수 튜닝`
+`5) 사설 Docker Registry (HTTP) 허용 설정 (Master, Worker 공통)`
+
+```zsh
+# Deployment에서 사설 레지스트리(예: 192.168.x.x:5000)의 이미지를 pull 받을 때,
+# K3s(containerd)는 기본적으로 HTTPS만 허용하므로 HTTP 통신을 허용하도록 미리 등록해야 ImagePullBackOff 오류가 나지 않음.
+# (192.168.x.x 부분을 실제 사설 레지스트리 IP로 변경할 것)
+
+sudo mkdir -p /etc/rancher/k3s
+sudo tee /etc/rancher/k3s/registries.yaml <<EOF
+mirrors:
+  "192.168.x.x:5000":
+    endpoint:
+      - "http://192.168.x.x:5000"
+EOF
+
+# 참고: K3s 설치 전에 미리 만들어두면 설치 시 자동 반영되며,
+# 만약 K3s 설치 후에 수정했다면 마스터는 sudo systemctl restart k3s, 워커는 sudo systemctl restart k3s-agent 실행 필요.
+```
+
+<br />
+
+`6) DB VM (VM4 - 4 vCPU / 16GB RAM) PostgreSQL 필수 튜닝 및 자동 백업 설정`
 
 ```zsh
 # PostgreSQL 설치 후 기본 설정은 메모리를 128MB만 쓰도록 되어 있어 16GB RAM을 전혀 활용하지 못함.
@@ -248,6 +269,16 @@ sudo ufw enable
 
 # 설정 변경 후 재시작
 # sudo systemctl restart postgresql
+```
+
+```zsh
+# 3. DB 자동 백업(pg_dump) 크론탭 설정 (DB VM에서 실행)
+# 단일 베어메탈 서버 특성상 디스크 장애에 대비해 매일 새벽 자동 백업 및 7일 이상 된 백업본 자동 삭제 설정 권장
+sudo mkdir -p /var/backups/postgres
+sudo chown postgres:postgres /var/backups/postgres
+
+# postgres 유저의 crontab에 매일 새벽 3시 백업 등록 (pro_one 은 실제 DB 이름으로 변경)
+sudo crontab -u postgres -l 2>/dev/null | { cat; echo "0 3 * * * pg_dump -Fc pro_one > /var/backups/postgres/pro_one_\$(date +\%F).dump && find /var/backups/postgres/ -type f -mtime +7 -delete"; } | sudo crontab -u postgres -
 ```
 
 <br />
@@ -568,6 +599,10 @@ kubectl get clusterissuer
 전파는 수분~최대 24시간 소요될 수 있음.
 
 Ingress 적용 전에 DNS 전파가 완료되어 있어야 인증서 발급이 정상 동작함.
+
+참고: 가정집/사무실 유동 공인 IP 환경인 경우, 공유기 재부팅 시 공인 IP가 바뀔 수 있으므로
+도메인 업체(Cloudflare 등)의 DDNS 스크립트를 돌리거나 공유기 자체 DDNS 연동 기능을 활용하여
+공인 IP 변경 시 A 레코드가 자동 갱신되도록 구성하는 것을 권장함.
 ```
 
 <br />
@@ -631,6 +666,10 @@ ISP(KT, SKB 등 일부 요금제)에서 80/443 포트를 차단하는 경우가 
 # 워커 노드가 2개인 상태에서 requiredDuringScheduling(강제 분산)을 쓰면,
 # HPA가 파드를 3개, 4개로 스케일아웃할 때 "파드 겹침 금지" 규칙 때문에 3번째 파드부터 Pending에 빠져 뜨지 못함!
 # 따라서 반드시 preferredDuringScheduling(가급적 분산하되, 노드가 모자라면 한 노드에 여러 개 허용)을 사용해야 함.
+
+# 주의 3: 롤링 업데이트 시 기존 트래픽 유실 방지 (preStop 훅 적용)
+# 파드가 내려갈 때 kube-proxy의 엔드포인트 목록에서 제거되는 시간(수 초) 동안 이미 들어오던 요청이 끊기지 않도록
+# lifecycle.preStop 에 sleep 5 를 주어 안전하게 무중단 종료(Graceful Shutdown)되도록 구성함.
 ```
 
 <br />
@@ -658,6 +697,7 @@ spec:
       labels:
         app: nest
     spec:
+      terminationGracePeriodSeconds: 30
       # 동일 앱 replica를 가급적 서로 다른 노드에 분산하되,
       # HPA 스케일아웃(최대 4개)이나 롤링 업데이트 시 워커가 2대뿐이어도 Pending 없이 뜨도록 preferred 사용
       affinity:
@@ -683,6 +723,10 @@ spec:
         envFrom:
         - secretRef:
             name: nest-secret
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 5"]
         resources:
           requests:
             cpu: "100m"
@@ -866,6 +910,7 @@ spec:
       labels:
         app: next
     spec:
+      terminationGracePeriodSeconds: 30
       # 동일 앱 replica를 가급적 서로 다른 노드에 분산하되,
       # HPA 스케일아웃(최대 4개) 시 워커가 2대뿐이어도 Pending 없이 뜨도록 preferred 사용
       affinity:
@@ -891,6 +936,10 @@ spec:
         args: ["server.js"]
         ports:
         - containerPort: 3000
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 5"]
         resources:
           requests:
             cpu: "200m"
