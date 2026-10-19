@@ -12,7 +12,7 @@ Ingress 리소스의 주된 목적은 Ingress Controller를 통해,
 외부 트래픽을 클러스터 내부의 특정 Service 리소스와 연결하는 것이다.
 
 Hyper-V VM을 사용해서 K3s 클러스터 구조를 만들고 MetalLB, ServiceLB 를 사용하지 않는 버전 예시이다.
-(kube-vip + Traefik 사용, 하나의 클러스터에 여러 개의 인스턴스 사용, 외부 별도 DB VM 연동)
+(kube-vip + Traefik 사용, 하나의 클러스터에 여러 개의 인스턴스 사용, 외부 별도 DB VM 및 정적 파일 스토리지 VM 연동)
 
 [핵심 트래픽 흐름 요약]
 외부 요청
@@ -42,6 +42,7 @@ Hyper-V VM을 사용해서 K3s 클러스터 구조를 만들고 MetalLB, Service
 
 3) 동적 확장 디스크(동적 VHDX) 지양 -> 반드시 [고정 크기 VHDX] 권장
    특히 DB VM과 Master(etcd) VM은 디스크가 실시간으로 늘어날 때 발생하는 I/O 지연(Latency)에 매우 민감함
+   (단, 정적 파일 보관용 VM5와 개발 서버인 VM6는 디스크 공간 절약을 위해 동적 확장 VHDX를 사용해도 무방함)
 
 4) 가상 스위치 및 MAC 주소 스푸핑(MAC Address Spoofing) 허용 (가장 중요)
    네트워크는 반드시 외부 가상 스위치(External Virtual Switch)로 생성하여 공유기 대역 IP를 직접 받게 설정.
@@ -62,29 +63,31 @@ Hyper-V VM을 사용해서 K3s 클러스터 구조를 만들고 MetalLB, Service
 
 1. 생성할 VM 사양 (2697v2 12코어 24스레드 / 64GB RAM 기준)
 
-| VM  | 역할             | CPU     | RAM  | DISK (고정 VHDX) | VM IP 예시 (고정) | 비고 |
-|:---:|------------------|---------|------|------------------|-------------------|------|
-| Host| Windows 11 Pro   | (공유)   | 8GB  | -                | -                 | 호스트 OS 및 Hyper-V 여유분 |
-| VM1 | Master 1         | 4 vCPU  | 8GB  | 60GB+            | 192.168.0.101     | 컨트롤 플레인 + Docker 빌드 및 Private Registry |
-| VM2 | Worker 1         | 6 vCPU  | 16GB | 80GB+            | 192.168.0.102     | Traefik, Next, Nest 구동 |
-| VM3 | Worker 2         | 6 vCPU  | 16GB | 80GB+            | 192.168.0.103     | Traefik, Next, Nest 구동 |
-| VM4 | DB (PostgreSQL)  | 4 vCPU  | 16GB | 100GB+           | 192.168.0.104     | 단독 PostgreSQL 서버 |
+| VM  | 역할                      | CPU     | RAM  | DISK (권장 VHDX)    | VM IP 예시 (고정)   | 비고                                        |
+|:---:|--------------------------|---------|------|--------------------|-------------------|--------------------------------------------|
+| Host| Windows 11 Pro           | -       | -    | -                  | -                 | 호스트 OS 및 Hyper-V 여유분                    |
+| VM1 | Master 1                 | 4 vCPU  | 8GB  | 60GB+ (고정)        | 192.168.0.101     | 컨트롤 플레인 + Docker 빌드 및 Private Registry |
+| VM2 | Worker 1                 | 6 vCPU  | 12GB | 80GB+ (고정)        | 192.168.0.102     | Traefik, Next, Nest 구동 + NFS 클라이언트 마운트 |
+| VM3 | Worker 2                 | 6 vCPU  | 12GB | 80GB+ (고정)        | 192.168.0.103     | Traefik, Next, Nest 구동 + NFS 클라이언트 마운트 |
+| VM4 | DB (PostgreSQL)          | 4 vCPU  | 12GB | 100GB+ (고정)       | 192.168.0.104     | 단독 PostgreSQL 서버                         |  
+| VM5 | Storage (NFS 파일 서버)    | 2 vCPU  | 2GB  | 100GB+ (고정/동적)   | 192.168.0.105     | 정적 파일(/uploads) 전용 단독 NFS 스토리지 서버    |
+| VM6 | Dev Server (개발 서버)     | 2 vCPU  | 8GB  | 60GB+ (동적 가능)    | 192.168.0.106     | 독립된 개발 및 테스트용 인스턴스                   |
 
 ```
-CPU 합계 -> 20 vCPU 할당 (24 논리 스레드 중 4 스레드는 Windows 호스트 및 하이퍼바이저 스케줄링 여유분으로 확보하여 CPU 경합 방지)
+CPU 합계 -> 24 vCPU 할당 (4 + 6 + 6 + 4 + 2 + 2 = 24 스레드, 스토리지 및 개발 서버는 상시 부하가 낮으므로 CPU 경합 없이 쾌적하게 구동됨)
 
-RAM 합계 -> VM에 총 56GB 고정 할당 (Master 1에서 Docker 이미지 빌드를 겸하므로 8GB 할당) + Windows 11 호스트에 8GB 확보 = 총 64GB
+RAM 합계 -> VM에 총 54GB 고정 할당 (8 + 12 + 12 + 12 + 2 + 8 = 54GB) + Windows 11 호스트에 10GB 확보 = 총 64GB
 
 VIP IP -> 공유기 DHCP 할당 범위 밖의 "192.168.0.240" 이라고 가정
-공유기 관리자 페이지에서 DHCP 할당 범위를 192.168.0.2 ~ 192.168.0.200 으로 줄여두면,
-혹시 모를 201~254 대역 충돌 없이 안전하게 고정 IP 및 VIP로 사용할 수 있음
+          공유기 관리자 페이지에서 DHCP 할당 범위를 192.168.0.2 ~ 192.168.0.200 으로 줄여두면,
+          혹시 모를 201~254 대역 충돌 없이 안전하게 고정 IP 및 VIP로 사용할 수 있음
 ```
 
 <br />
 <br />
 <br />
 
-2. 각 VM 사전 설정 (Master, Worker, DB)
+2. 각 VM 사전 설정 (Master, Worker, DB, Storage)
 
 `0) 스왑(Swap) 메모리 영구 비활성화 및 커널 네트워크 설정 (각 K3s VM에서 필수)`
 
@@ -160,8 +163,14 @@ sudo hostnamectl set-hostname worker-1
 # VM3 에서 실행
 sudo hostnamectl set-hostname worker-2
 
-# VM4 에서 실행
+# VM4 에서 실행 (DB 서버)
 sudo hostnamectl set-hostname db-server
+
+# VM5 에서 실행 (정적 파일 스토리지 서버)
+sudo hostnamectl set-hostname storage-server
+
+# VM6 에서 실행 (개발 서버)
+sudo hostnamectl set-hostname dev-server
 
 # 호스트명 변경은 현재 세션에 즉시 반영되지 않음
 # 변경 후 SSH 재접속 또는 아래 명령으로 새 쉘 실행
@@ -178,12 +187,14 @@ sudo tee -a /etc/hosts << EOF
 192.168.0.102 worker-1
 192.168.0.103 worker-2
 192.168.0.104 db-server
+192.168.0.105 storage-server
+192.168.0.106 dev-server
 EOF
 ```
 
 <br />
 
-`4) 방화벽 설정 (Master, Worker, DB)`
+`4) 방화벽 설정 (Master, Worker, DB, Storage)`
 
 ```zsh
 # Pod 간 통신 (CNI - Flannel VXLAN) 및 Metrics 주의사항
@@ -227,6 +238,14 @@ sudo ufw allow from 192.168.0.0/24 to any port 5432 proto tcp
 sudo ufw enable
 ```
 
+```zsh
+# Storage 노드 (VM5 - 정적 파일 전용 단독 NFS 서버)
+# 내부 사설망(192.168.0.0/24)에서의 NFS(2049) 접근만 허용하여 보안 강화
+sudo ufw allow 22/tcp
+sudo ufw allow from 192.168.0.0/24 to any port 2049 proto tcp
+sudo ufw enable
+```
+
 <br />
 
 `5) 사설 Docker Registry (HTTP) 허용 설정 (Master, Worker 공통)`
@@ -249,23 +268,23 @@ EOF
 
 <br />
 
-`6) DB VM (VM4 - 4 vCPU / 16GB RAM) PostgreSQL 필수 튜닝 및 자동 백업 설정`
+`6) DB VM (VM4 - 4 vCPU / 12GB RAM) PostgreSQL 필수 튜닝 및 자동 백업 설정`
 
 ```zsh
-# PostgreSQL 설치 후 기본 설정은 메모리를 128MB만 쓰도록 되어 있어 16GB RAM을 전혀 활용하지 못함
+# PostgreSQL 설치 후 기본 설정은 메모리를 128MB만 쓰도록 되어 있어 할당된 12GB RAM을 전혀 활용하지 못함
 # 반드시 아래 설정을 postgresql.conf 및 pg_hba.conf 에 적용할 것.
 
-# 1. 외부(워커 노드) 접속 허용 설정
+# 1. 외부(워커 노드 및 개발 서버) 접속 허용 설정
 # /etc/postgresql/<버전>/main/postgresql.conf 파일 수정:
 # listen_addresses = '*'
 
 # /etc/postgresql/<버전>/main/pg_hba.conf 파일 하단에 추가:
 # host    all             all             192.168.0.0/24          scram-sha-256
 
-# 2. 4 vCPU / 16GB RAM 맞춤 성능 튜닝 (/etc/postgresql/<버전>/main/postgresql.conf)
-# shared_buffers = 4GB                  # 전체 RAM의 25%
-# effective_cache_size = 12GB           # 전체 RAM의 75%
-# maintenance_work_mem = 1GB
+# 2. 4 vCPU / 12GB RAM 맞춤 성능 튜닝 (/etc/postgresql/<버전>/main/postgresql.conf)
+# shared_buffers = 3GB                  # 전체 RAM(12GB)의 25%
+# effective_cache_size = 9GB            # 전체 RAM(12GB)의 75%
+# maintenance_work_mem = 768MB
 # work_mem = 16MB
 # max_connections = 200                 # Nest 파드가 최대 4개로 늘어날 때의 커넥션 풀 여유분 확보
 # random_page_cost = 1.1                # SSD 환경 최적화
@@ -275,13 +294,64 @@ EOF
 ```
 
 ```zsh
-# 3. DB 자동 백업(pg_dump) 크론탭 설정 (DB VM에서 실행)
+# 3. DB 자동 백업(pg_dump) 크론탭 설정 (DB VM인 VM4에서 실행)
 # 단일 베어메탈 서버 특성상 디스크 장애에 대비해 매일 새벽 자동 백업 및 7일 이상 된 백업본 자동 삭제 설정 권장
 sudo mkdir -p /var/backups/postgres
 sudo chown postgres:postgres /var/backups/postgres
 
-# postgres 유저의 crontab에 매일 새벽 3시 백업 등록 (pro_one 은 실제 DB 이름으로 변경)
+# postgres 유저의 crontab에 매일 새벽 3시 DB 덤프 백업 등록 (pro_one 은 실제 DB 이름으로 변경)
 sudo crontab -u postgres -l 2>/dev/null | { cat; echo "0 3 * * * pg_dump -Fc pro_one > /var/backups/postgres/pro_one_\$(date +\%F).dump && find /var/backups/postgres/ -type f -mtime +7 -delete"; } | sudo crontab -u postgres -
+```
+
+<br />
+
+`7) Storage VM (VM5 - 2 vCPU / 2GB RAM) 단독 NFS 서버 구축 및 워커 노드 마운트`
+
+```
+* 왜 정적 파일(/uploads) 전용 Storage VM(NFS)을 사용하는가?
+  - 워커 노드가 2대(Worker 1, Worker 2)이므로, 각 워커 노드의 로컬 디스크(/uploads)에 파일을 그냥 저장하면
+    Worker 1의 파드에 업로드한 이미지나 PDF를 Worker 2의 파드에서는 찾지 못해 404 에러가 발생함.
+  - 따라서 독립된 Storage VM(192.168.0.105)에 원본 폴더(/srv/nfs/uploads)를 만들고 NFS로 공유한 뒤,
+    Worker 1과 Worker 2가 각자의 /uploads 경로에 이를 마운트하면 코드 수정 없이 모든 파드가 동일한 파일들을 실시간으로 읽고 쓸 수 있음.
+```
+
+```zsh
+# [1단계: Storage VM (VM5 - 192.168.0.105) 에서 실행]
+# NFS 서버 패키지 설치 및 원본 디렉토리 생성
+sudo apt-get update && sudo apt-get install -y nfs-kernel-server
+sudo mkdir -p /srv/nfs/uploads
+sudo chown nobody:nogroup /srv/nfs/uploads
+sudo chmod 777 /srv/nfs/uploads
+
+# 워커 노드(192.168.0.102, 103) 및 개발 서버(192.168.0.106)에서 읽고 쓸 수 있도록 export 설정 등록
+# no_root_squash 옵션을 넣어야 컨테이너 내부 프로세스가 권한 오류 없이 파일을 생성/수정할 수 있음
+cat <<EOF | sudo tee -a /etc/exports
+/srv/nfs/uploads 192.168.0.102(rw,sync,no_subtree_check,no_root_squash)
+/srv/nfs/uploads 192.168.0.103(rw,sync,no_subtree_check,no_root_squash)
+/srv/nfs/uploads 192.168.0.106(rw,sync,no_subtree_check,no_root_squash)
+EOF
+
+# 설정 반영 및 서비스 활성화
+sudo exportfs -ra
+sudo systemctl enable --now nfs-kernel-server
+
+# (선택) Storage VM 내부에서 매일 새벽 3시 30분 정적 파일 압축 백업 크론탭 등록
+sudo mkdir -p /var/backups/uploads
+sudo crontab -l 2>/dev/null | { cat; echo "30 3 * * * tar -czf /var/backups/uploads/uploads_\$(date +\%F).tar.gz -C /srv/nfs uploads && find /var/backups/uploads/ -type f -mtime +7 -delete"; } | sudo crontab -
+```
+
+```zsh
+# [2단계: Worker 1 (VM2) 및 Worker 2 (VM3) 에서 각각 실행]
+# NFS 클라이언트 패키지 설치 및 마운트할 /uploads 폴더 생성
+sudo apt-get update && sudo apt-get install -y nfs-common
+sudo mkdir -p /uploads
+
+# 재부팅 시에도 Storage VM(192.168.0.105)의 폴더가 자동 마운트되도록 /etc/fstab 에 등록 후 즉시 마운트
+echo "192.168.0.105:/srv/nfs/uploads /uploads nfs defaults,_netdev 0 0" | sudo tee -a /etc/fstab
+sudo mount -a
+
+# 마운트가 정상적으로 되었는지 확인 (192.168.0.105:/srv/nfs/uploads 항목이 보여야 함)
+df -h | grep uploads
 ```
 
 <br />
@@ -673,6 +743,10 @@ ISP(KT, SKB 등 일부 요금제)에서 80/443 포트를 차단하는 경우가 
 # 주의 3: 롤링 업데이트 시 기존 트래픽 유실 방지 (preStop 훅 적용)
 # 파드가 내려갈 때 kube-proxy의 엔드포인트 목록에서 제거되는 시간(수 초) 동안 이미 들어오던 요청이 끊기지 않도록
 # lifecycle.preStop 에 sleep 5 를 주어 안전하게 무중단 종료(Graceful Shutdown)되도록 구성함.
+
+# 주의 4: 정적 파일 공유 폴더(/uploads) 볼륨 마운트
+# 2-7번 단계에서 각 워커 노드의 /uploads 에 마운트해 둔 Storage VM(192.168.0.105)의 NFS 폴더를
+# 파드 내부의 /uploads 로 연결(hostPath)하여 어느 워커 노드에 뜬 파드든 동일한 이미지/PDF/텍스트 파일에 접근할 수 있게 함.
 ```
 
 <br />
@@ -726,6 +800,9 @@ spec:
         envFrom:
         - secretRef:
             name: nest-secret
+        volumeMounts:
+        - name: uploads-volume
+          mountPath: /uploads
         lifecycle:
           preStop:
             exec:
@@ -759,6 +836,11 @@ spec:
             port: 4000
           initialDelaySeconds: 0 # startupProbe 가 대신함
           periodSeconds: 5
+      volumes:
+      - name: uploads-volume
+        hostPath:
+          path: /uploads
+          type: DirectoryOrCreate
 ```
 
 <br />
@@ -939,6 +1021,9 @@ spec:
         args: ["server.js"]
         ports:
         - containerPort: 3000
+        volumeMounts:
+        - name: uploads-volume
+          mountPath: /uploads
         lifecycle:
           preStop:
             exec:
@@ -972,6 +1057,11 @@ spec:
             port: 3000
           initialDelaySeconds: 0  # startupProbe 가 대신함
           periodSeconds: 10
+      volumes:
+      - name: uploads-volume
+        hostPath:
+          path: /uploads
+          type: DirectoryOrCreate
 ```
 
 <br />
@@ -1536,7 +1626,7 @@ kubectl delete pod test-1 test-2
 * TIP
 
 ```
-* 클러스터 내부 및 외부 DB 연결 방식
+* 클러스터 내부 및 외부 DB / Storage 연결 방식
 
 1) DB가 클러스터 내부 Pod로 떠 있을 때:
    Service 이름으로 지정해놓으면 됨.
@@ -1545,7 +1635,10 @@ kubectl delete pod test-1 test-2
 2) DB가 클러스터 외부 별도 Hyper-V VM(예: 192.168.0.104)에 떠 있을 때 (현재 아키텍처):
    공인 도메인(healthapp.shop)을 쓰지 말고, 사설 IP(192.168.0.104)를 직접 지정할 것!
    ex) PostgreSQL → postgresql://id:pw@192.168.0.104:5432/dbname
-   (원한다면 쿠버네티스 내부에 ExternalName 서비스나 Selector 없는 Service + Endpoints를 만들어 도메인처럼 매핑할 수도 있음)
+
+3) 정적 파일 스토리지(NFS)가 별도 Hyper-V VM(예: 192.168.0.105)에 떠 있을 때 (현재 아키텍처):
+   각 워커 노드의 /uploads 경로에 NFS를 마운트하고, 파드에서는 hostPath(/uploads)로 연결하여
+   어느 노드에 뜬 파드든 로컬 폴더처럼 투명하게 파일을 읽고 쓸 수 있음.
 
 ┌───────────────────────────────────────┐
 │            Service 타입 계층            │
