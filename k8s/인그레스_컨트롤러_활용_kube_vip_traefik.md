@@ -686,15 +686,15 @@ Ingress 적용 전에 DNS 전파가 완료되어 있어야 인증서 발급이 �
 
 | 구분       | 설명           |
 |-----------|---------------|
-| 도메인     | domain_name |
+| 도메인     | domain_name    |
 | 레코드     | A              |
 | 호스트     | @              |
 | 값(IP주소) | 공인IP          |
 | TTL      | 3600 (1시간)    |
 
 ```zsh
-nslookup domain_name
-dig domain_name
+nslookup {domain_name}
+dig {domain_name}
 ```
 
 <br />
@@ -938,10 +938,10 @@ spec:
 #   --from-literal=HOST=0.0.0.0 \
 #   --from-literal=PORT=4000 \
 #   --from-literal=UPLOAD_DIR=/uploads \
-#   --from-literal=DATABASE_URL='postgresql://codej625:0625@192.168.0.104:5432/db_name' \
+#   --from-literal=DATABASE_URL='postgresql://{id}:{pw}@192.168.0.104:5432/{db_name}' \
 #   --from-literal=JWT_SECRET='운영용-강한-랜덤-문자열' \
 #   --from-literal=REFRESH_TOKEN_HASH_SECRET='운영용-다른-랜덤-문자열-32자-이상' \
-#   --from-literal=CORS_ORIGIN='https://{사용 도메인}' \
+#   --from-literal=CORS_ORIGIN='https://{domain_name}' \
 #   -n default
 ---
 apiVersion: v1
@@ -958,7 +958,7 @@ stringData:
   DATABASE_URL: "postgresql://{id}:{password}@192.168.0.104:5432/{db_name}"
   JWT_SECRET: "REPLACE_WITH_STRONG_RANDOM_SECRET"
   REFRESH_TOKEN_HASH_SECRET: "REPLACE_WITH_STRONG_RANDOM_HASH_SECRET"
-  CORS_ORIGIN: "https://{사용 도메인}"
+  CORS_ORIGIN: "https://{domain_name}"
 ```
 
 <br />
@@ -1180,7 +1180,7 @@ kubectl get clusterissuer letsencrypt-prod
 # 경로로 나누기 - strip-api-prefix 미들웨어 포함 버전
 
 # ----- HTTP (80) -----
-# domain_name → HTTPS로 리다이렉트 후 next-svc(프론트)로
+# {domain_name} → HTTPS로 리다이렉트 후 next-svc(프론트)로
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -1349,7 +1349,7 @@ spec:
     name: letsencrypt-prod
     kind: ClusterIssuer
   dnsNames:
-  - domain_name
+  - {domain_name}
 ```
 
 <br />
@@ -1472,7 +1472,7 @@ spec:
     name: letsencrypt-prod
     kind: ClusterIssuer
   dnsNames:
-  - domain_name
+  - {domain_name}
   renewBefore: 720h  # 만료 30일 전 갱신 (예시값). 더 일찍 갱신하려면 값을 높임 (예: 1440h = 60일 전)
 ```
 
