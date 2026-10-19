@@ -1587,7 +1587,7 @@ ip link
 `Pod 간 통신이 안 될 때 (다른 노드에 배치된 Pod끼리 통신 실패)`
 
 ```zsh
-# VM끼리 ping은 되는데 Pod 간 통신이 안 되면 Flannel VXLAN 포트 문제일 가능성이 높음
+# VM끼리 ping은 되는데 Pod 간 통신이 안 되면 Flannel VXLAN 포트나 파드 대역 방화벽 문제일 가능성이 높음
 
 # 1) 각 노드에서 UDP 8472 방화벽 오픈 여부 확인
 sudo ufw status | grep 8472
@@ -1596,8 +1596,10 @@ sudo ufw status | grep 8472
 sudo ufw allow 8472/udp
 sudo ufw reload
 
-# 3) Flannel Pod 상태 확인
-kubectl get pods -n kube-system -l app=flannel
+# 3) K3s는 Flannel이 별도 파드가 아님
+# kubectl get pods -n kube-system -l app=flannel 결과가 비어 있는 것이 정상
+# 통신이 안 되면 각 노드(Master, Worker)에서 파드 대역 허용 여부를 확인
+sudo ufw status | grep 10.42
 
 # 4) 노드 간 Pod 통신 테스트
 kubectl run test-1 --image=busybox:1.36 --overrides='{"spec":{"nodeName":"worker-1"}}' -- sleep 3600
