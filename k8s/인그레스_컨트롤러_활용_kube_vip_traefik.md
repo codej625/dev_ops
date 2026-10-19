@@ -30,51 +30,54 @@ Hyper-V VM을 사용해서 K3s 클러스터 구조를 만들고 MetalLB, Service
 0. Windows 11 Pro 호스트 및 Hyper-V VM 생성 시 필수 주의사항
 
 ```
-베어메탈 서버(Windows 11 Pro)와 Hyper-V VM을 설정할 때 아래 항목을 반드시 먼저 적용해야 운영 중 클러스터가 뻗지 않음.
+* 베어메탈 서버(Windows 11 Pro)와 Hyper-V VM을 설정할 때 아래 항목을 반드시 먼저 적용해야 운영 중 클러스터가 뻗지 않음.
 
 1) Windows 11 호스트 전원 관리 및 자동 재부팅 방지
-   - 제어판 -> 전원 옵션 -> [고성능] 또는 [최고 성능] 선택, 절전 모드 진입 시간을 [해당 없음(Never)]으로 설정.
-   - Windows 업데이트 후 자동 재부팅으로 인해 전체 VM이 내려가지 않도록 활성 시간 설정 및 업데이트 일시 중지/관리 정책 적용.
+   제어판 -> 전원 옵션 -> [고성능] 또는 [최고 성능] 선택, 절전 모드 진입 시간을 [해당 없음(Never)]으로 설정.
+   Windows 업데이트 후 자동 재부팅으로 인해 전체 VM이 내려가지 않도록 활성 시간 설정 및 업데이트 일시 중지/관리 정책 적용.
 
 2) 동적 메모리(Dynamic Memory) 절대 금지 -> 반드시 [고정 메모리] 할당
-   - Linux는 남는 램을 디스크 캐시(buff/cache)로 사용하는데, Hyper-V와 K3s(kubelet), Postgres 간의 메모리 계산이 꼬여
-     메모리가 충분한데도 파드가 강제 종료(OOMKilled)되거나 VM이 멈춤.
+   Linux는 남는 램을 디스크 캐시(buff/cache)로 사용하는데, Hyper-V와 K3s(kubelet),
+   Postgres 간의 메모리 계산이 꼬여 메모리가 충분한데도 파드가 강제 종료(OOMKilled)되거나 VM이 멈춤
 
 3) 동적 확장 디스크(동적 VHDX) 지양 -> 반드시 [고정 크기 VHDX] 권장
-   - 특히 DB VM과 Master(etcd) VM은 디스크가 실시간으로 늘어날 때 발생하는 I/O 지연(Latency)에 매우 민감함.
+   특히 DB VM과 Master(etcd) VM은 디스크가 실시간으로 늘어날 때 발생하는 I/O 지연(Latency)에 매우 민감함
 
 4) 가상 스위치 및 MAC 주소 스푸핑(MAC Address Spoofing) 허용 (가장 중요)
-   - 네트워크는 반드시 외부 가상 스위치(External Virtual Switch)로 생성하여 공유기 대역 IP를 직접 받게 설정.
-   - kube-vip가 ARP 모드로 가상 IP(240)를 노드의 랜카드에 바인딩하고 신호를 브로드캐스트할 때,
-     Hyper-V 보안 기능이 이를 차단하지 않도록 각 K3s VM의 설정 -> [네트워크 어댑터] -> [고급 기능]에서
-     MAC 주소 스푸핑 활성화(Enable MAC address spoofing)를 반드시 체크할 것!
+   네트워크는 반드시 외부 가상 스위치(External Virtual Switch)로 생성하여 공유기 대역 IP를 직접 받게 설정.
+   kube-vip가 ARP 모드로 가상 IP(240)를 노드의 랜카드에 바인딩하고 신호를 브로드캐스트할 때,
+   Hyper-V 보안 기능이 이를 차단하지 않도록 각 K3s VM의 설정 -> [네트워크 어댑터] -> [고급 기능]에서
+   MAC 주소 스푸핑 활성화(Enable MAC address spoofing)를 반드시 체크
 
 5) 보안 부팅(Secure Boot) 해제 또는 템플릿 변경 (2세대 VM 생성 시)
-   - Ubuntu ISO 부팅이 막히지 않도록 [보안 부팅 사용]을 체크 해제하거나 [Microsoft UEFI 인증 기관]으로 변경.
+   Ubuntu ISO 부팅이 막히지 않도록 [보안 부팅 사용]을 체크 해제하거나 [Microsoft UEFI 인증 기관]으로 변경
 
 6) 스냅샷(검사점 / Checkpoints) 운영 중 비활성화 권장
-   - 검사점이 계속 쌓이면 디스크 I/O 성능이 저하되므로 초기 세팅 완료 후 운영 중에는 자동 검사점을 끄는 것을 권장.
+   검사점이 계속 쌓이면 디스크 I/O 성능이 저하되므로 초기 세팅 완료 후 운영 중에는 자동 검사점을 끄는 것을 권장
 ```
 
 <br />
 <br />
 <br />
 
-1. 생성할 VM 사양 (2697v2 12코어 24스레드 / 64GB RAM 기준 최적 배분)
+1. 생성할 VM 사양 (2697v2 12코어 24스레드 / 64GB RAM 기준)
 
 | VM  | 역할             | CPU     | RAM  | DISK (고정 VHDX) | VM IP 예시 (고정) | 비고 |
 |:---:|------------------|---------|------|------------------|-------------------|------|
-| Host| Windows 11 Pro   | (공유)  | 10GB | -                | -                 | 호스트 OS 및 Hyper-V 여유분 |
+| Host| Windows 11 Pro   | (공유)   | 10GB | -                | -                 | 호스트 OS 및 Hyper-V 여유분 |
 | VM1 | Master 1         | 4 vCPU  | 6GB  | 40GB             | 192.168.0.101     | API Server, etcd, 컨트롤 플레인 |
 | VM2 | Worker 1         | 6 vCPU  | 16GB | 80GB+            | 192.168.0.102     | Traefik, Next, Nest 구동 |
 | VM3 | Worker 2         | 6 vCPU  | 16GB | 80GB+            | 192.168.0.103     | Traefik, Next, Nest 구동 |
 | VM4 | DB (PostgreSQL)  | 4 vCPU  | 16GB | 100GB+           | 192.168.0.104     | 단독 PostgreSQL 서버 |
 
 ```
-* CPU 합계: 20 vCPU 할당 (24 논리 스레드 중 4 스레드는 Windows 호스트 및 하이퍼바이저 스케줄링 여유분으로 확보하여 CPU 경합 방지)
-* RAM 합계: VM에 총 54GB 고정 할당 + Windows 11 호스트에 10GB 확보 = 총 64GB
-* VIP IP는 공유기 DHCP 할당 범위 밖의 "192.168.0.240" 이라고 가정.
-* 공유기 관리자 페이지에서 DHCP 할당 범위를 192.168.0.2 ~ 192.168.0.200 으로 줄여두면 201~254 대역은 충돌 없이 안전하게 고정 IP 및 VIP로 사용할 수 있음.
+CPU 합계 -> 20 vCPU 할당 (24 논리 스레드 중 4 스레드는 Windows 호스트 및 하이퍼바이저 스케줄링 여유분으로 확보하여 CPU 경합 방지)
+
+RAM 합계 -> VM에 총 54GB 고정 할당 + Windows 11 호스트에 10GB 확보 = 총 64GB
+
+VIP IP -> 공유기 DHCP 할당 범위 밖의 "192.168.0.240" 이라고 가정
+공유기 관리자 페이지에서 DHCP 할당 범위를 192.168.0.2 ~ 192.168.0.200 으로 줄여두면,
+혹시 모를 201~254 대역 충돌 없이 안전하게 고정 IP 및 VIP로 사용할 수 있음
 ```
 
 <br />
@@ -126,8 +129,8 @@ sudo sysctl --system
 
 ```zsh
 # 쿠버네티스는 노드 간 시간이 크게 어긋나면 TLS 인증 오류, etcd 이상, 토큰 검증 실패 등
-# 원인을 찾기 어려운 문제가 발생함.
-# 특히 Hyper-V VM은 호스트 절전이나 스냅샷 복구 시 시간이 틀어지기 쉬우므로 반드시 확인할 것.
+# 원인을 찾기 어려운 문제가 발생
+# 특히 Hyper-V VM은 호스트 절전이나 스냅샷 복구 시 시간이 틀어지기 쉬우므로 반드시 확인할 것
 
 # 시간 동기화 상태 확인
 timedatectl status
@@ -167,7 +170,7 @@ exec bash
 
 <br />
 
-`3) /etc/hosts에 등록 (모든 VM에서, IP는 예시이다.)`
+`3) /etc/hosts에 등록 (모든 VM에서, IP는 예시)`
 
 ```zsh
 sudo tee -a /etc/hosts << EOF
@@ -249,7 +252,7 @@ EOF
 `6) DB VM (VM4 - 4 vCPU / 16GB RAM) PostgreSQL 필수 튜닝 및 자동 백업 설정`
 
 ```zsh
-# PostgreSQL 설치 후 기본 설정은 메모리를 128MB만 쓰도록 되어 있어 16GB RAM을 전혀 활용하지 못함.
+# PostgreSQL 설치 후 기본 설정은 메모리를 128MB만 쓰도록 되어 있어 16GB RAM을 전혀 활용하지 못함
 # 반드시 아래 설정을 postgresql.conf 및 pg_hba.conf 에 적용할 것.
 
 # 1. 외부(워커 노드) 접속 허용 설정
