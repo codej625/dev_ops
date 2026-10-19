@@ -279,7 +279,8 @@ git remote set-url origin git@github.com:codej625/레포이름.git
 set -e
 
 REGISTRY="192.168.0.101:5000"
-GIT_ROOT="/home/codej625/workspace/pro_one"
+NEXT_PUBLIC_API_URL="https://<사용하는 도메인>"
+GIT_ROOT="/<프로젝트 경로>"
 FRONTEND_PATH="$GIT_ROOT/front-end"
 BACKEND_PATH="$GIT_ROOT/back-end"
 
@@ -318,9 +319,11 @@ cd "$GIT_ROOT" || exit 1
 git pull
 
 echo "=== 4. Docker Build & Push (순차 빌드) ==="
-docker build -t "$NEXT_LATEST" "$FRONTEND_PATH"
+docker build \
+  --build-arg NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
+  -t "$NEXT_LATEST" \
+  "$FRONTEND_PATH"
 docker push "$NEXT_LATEST"
-
 docker build -t "$NEST_LATEST" "$BACKEND_PATH"
 docker push "$NEST_LATEST"
 
@@ -331,9 +334,17 @@ kubectl rollout restart deployment/next
 if kubectl rollout status deployment/next --timeout=360s; then
   echo "[성공] next 배포 완료."
 else
-  echo "[실패] next 배포 실패. 직전 이미지(:rollback)로 즉시 복구합니다..."
+  echo "[실패] next 배포 실패. 직전 이미지(:rollback)로 즉시 복구합니다."
   kubectl set image deployment/next next="$NEXT_ROLLBACK"
   kubectl rollout status deployment/next --timeout=180s || true
+
+  docker pull "$NEXT_ROLLBACK"
+  docker tag "$NEXT_ROLLBACK" "$NEXT_LATEST"
+  docker push "$NEXT_LATEST"
+
+  docker pull "$NEST_ROLLBACK"
+  docker tag "$NEST_ROLLBACK" "$NEST_LATEST"
+  docker push "$NEST_LATEST"
   exit 1
 fi
 
@@ -349,6 +360,14 @@ else
   kubectl set image deployment/next next="$NEXT_ROLLBACK"
   kubectl rollout status deployment/nest --timeout=180s || true
   kubectl rollout status deployment/next --timeout=180s || true
+
+  docker pull "$NEXT_ROLLBACK"
+  docker tag "$NEXT_ROLLBACK" "$NEXT_LATEST"
+  docker push "$NEXT_LATEST"
+
+  docker pull "$NEST_ROLLBACK"
+  docker tag "$NEST_ROLLBACK" "$NEST_LATEST"
+  docker push "$NEST_LATEST"
   exit 1
 fi
 
