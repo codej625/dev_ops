@@ -822,21 +822,21 @@ spec:
         # 초기화 로직 없으면 제거하고 livenessProbe initialDelaySeconds 복구
         startupProbe:
           httpGet:
-            path: /              # /health 엔드포인트 생기면 변경 권장
+            path: /health # 엔드포인트 생기면 변경 권장
             port: 4000
           failureThreshold: 30   # 최대 30 * 10초 = 300초 대기
           periodSeconds: 10
         # 운영중 먹통되면 자동 재시작
         livenessProbe:
           httpGet:
-            path: /              # /health 엔드포인트 생기면 변경 권장
+            path: /health # 엔드포인트 생기면 변경 권장
             port: 4000
           initialDelaySeconds: 0 # startupProbe 가 대신함
           periodSeconds: 10
         # 배포 시 준비될때까지 트래픽 안받음
         readinessProbe:
           httpGet:
-            path: /              # /health 엔드포인트 생기면 변경 권장
+            path: /health # 엔드포인트 생기면 변경 권장
             port: 4000
           initialDelaySeconds: 0 # startupProbe 가 대신함
           periodSeconds: 5
