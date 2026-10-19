@@ -686,15 +686,15 @@ Ingress 적용 전에 DNS 전파가 완료되어 있어야 인증서 발급이 �
 
 | 구분       | 설명           |
 |-----------|---------------|
-| 도메인     | healthapp.shop |
+| 도메인     | domain_name |
 | 레코드     | A              |
 | 호스트     | @              |
 | 값(IP주소) | 공인IP          |
 | TTL      | 3600 (1시간)    |
 
 ```zsh
-nslookup healthapp.shop
-dig healthapp.shop
+nslookup domain_name
+dig domain_name
 ```
 
 <br />
@@ -1180,7 +1180,7 @@ kubectl get clusterissuer letsencrypt-prod
 # 경로로 나누기 - strip-api-prefix 미들웨어 포함 버전
 
 # ----- HTTP (80) -----
-# healthapp.shop → HTTPS로 리다이렉트 후 next-svc(프론트)로
+# domain_name → HTTPS로 리다이렉트 후 next-svc(프론트)로
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -1190,7 +1190,7 @@ spec:
   entryPoints:
     - web
   routes:
-  - match: Host(`healthapp.shop`)
+  - match: Host(`domain_name`)
     kind: Rule
     middlewares:
     - name: redirect-https
@@ -1210,7 +1210,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-  - match: Host(`healthapp.shop`) && PathPrefix(`/api`)
+  - match: Host(`domain_name`) && PathPrefix(`/api`)
     kind: Rule
     middlewares:
     - name: strip-api-prefix
@@ -1218,7 +1218,7 @@ spec:
     services:
     - name: nest-svc
       port: 4000
-  - match: Host(`healthapp.shop`)
+  - match: Host(`domain_name`)
     kind: Rule
     middlewares:
     - name: rate-limit
@@ -1245,7 +1245,7 @@ spec:
   entryPoints:
     - web
   routes:
-  - match: Host(`healthapp.shop`)
+  - match: Host(`domain_name`)
     kind: Rule
     middlewares:
     - name: redirect-https
@@ -1262,12 +1262,12 @@ spec:
   entryPoints:
     - websecure
   routes:
-  - match: Host(`healthapp.shop`) && PathPrefix(`/api`)
+  - match: Host(`domain_name`) && PathPrefix(`/api`)
     kind: Rule
     services:
     - name: nest-svc
       port: 4000
-  - match: Host(`healthapp.shop`)
+  - match: Host(`domain_name`)
     kind: Rule
     services:
     - name: next-svc
@@ -1349,7 +1349,7 @@ spec:
     name: letsencrypt-prod
     kind: ClusterIssuer
   dnsNames:
-  - healthapp.shop
+  - domain_name
 ```
 
 <br />
@@ -1472,7 +1472,7 @@ spec:
     name: letsencrypt-prod
     kind: ClusterIssuer
   dnsNames:
-  - healthapp.shop
+  - domain_name
   renewBefore: 720h  # 만료 30일 전 갱신 (예시값). 더 일찍 갱신하려면 값을 높임 (예: 1440h = 60일 전)
 ```
 
@@ -1611,7 +1611,7 @@ kubectl delete pod test-1 test-2
    ex) PostgreSQL → postgresql://id:pw@database-service:5432/dbname
 
 2) DB가 클러스터 외부 별도 Hyper-V VM(예: 192.168.0.104)에 떠 있을 때 (현재 아키텍처):
-   공인 도메인(healthapp.shop)을 쓰지 말고, 사설 IP(192.168.0.104)를 직접 지정할 것!
+   공인 도메인(domain_name)을 쓰지 말고, 사설 IP(192.168.0.104)를 직접 지정할 것!
    ex) PostgreSQL → postgresql://id:pw@192.168.0.104:5432/dbname
 
 3) 정적 파일 스토리지(NFS)가 별도 Hyper-V VM(예: 192.168.0.105)에 떠 있을 때 (현재 아키텍처):
