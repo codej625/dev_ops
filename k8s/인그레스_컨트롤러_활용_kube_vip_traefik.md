@@ -64,8 +64,8 @@ Hyper-V VM을 사용해서 K3s 클러스터 구조를 만들고 MetalLB, Service
 
 | VM  | 역할             | CPU     | RAM  | DISK (고정 VHDX) | VM IP 예시 (고정) | 비고 |
 |:---:|------------------|---------|------|------------------|-------------------|------|
-| Host| Windows 11 Pro   | (공유)   | 10GB | -                | -                 | 호스트 OS 및 Hyper-V 여유분 |
-| VM1 | Master 1         | 4 vCPU  | 6GB  | 40GB             | 192.168.0.101     | API Server, etcd, 컨트롤 플레인 |
+| Host| Windows 11 Pro   | (공유)   | 8GB  | -                | -                 | 호스트 OS 및 Hyper-V 여유분 |
+| VM1 | Master 1         | 4 vCPU  | 8GB  | 60GB+            | 192.168.0.101     | 컨트롤 플레인 + Docker 빌드 및 Private Registry |
 | VM2 | Worker 1         | 6 vCPU  | 16GB | 80GB+            | 192.168.0.102     | Traefik, Next, Nest 구동 |
 | VM3 | Worker 2         | 6 vCPU  | 16GB | 80GB+            | 192.168.0.103     | Traefik, Next, Nest 구동 |
 | VM4 | DB (PostgreSQL)  | 4 vCPU  | 16GB | 100GB+           | 192.168.0.104     | 단독 PostgreSQL 서버 |
@@ -73,7 +73,7 @@ Hyper-V VM을 사용해서 K3s 클러스터 구조를 만들고 MetalLB, Service
 ```
 CPU 합계 -> 20 vCPU 할당 (24 논리 스레드 중 4 스레드는 Windows 호스트 및 하이퍼바이저 스케줄링 여유분으로 확보하여 CPU 경합 방지)
 
-RAM 합계 -> VM에 총 54GB 고정 할당 + Windows 11 호스트에 10GB 확보 = 총 64GB
+RAM 합계 -> VM에 총 56GB 고정 할당 (Master 1에서 Docker 이미지 빌드를 겸하므로 8GB 할당) + Windows 11 호스트에 8GB 확보 = 총 64GB
 
 VIP IP -> 공유기 DHCP 할당 범위 밖의 "192.168.0.240" 이라고 가정
 공유기 관리자 페이지에서 DHCP 할당 범위를 192.168.0.2 ~ 192.168.0.200 으로 줄여두면,
@@ -203,6 +203,7 @@ sudo ufw allow 80/tcp          # HTTP
 sudo ufw allow 443/tcp         # HTTPS
 sudo ufw allow 8472/udp        # Flannel VXLAN (노드 간 Pod 통신 - 반드시 필요)
 sudo ufw allow 51820/udp       # Flannel WireGuard (암호화 모드 사용 시)
+sudo ufw allow from 192.168.0.0/24 to any port 5000 proto tcp # Master 노드의 Private Registry 접근 허용
 sudo ufw enable
 ```
 
@@ -231,16 +232,15 @@ sudo ufw enable
 `5) 사설 Docker Registry (HTTP) 허용 설정 (Master, Worker 공통)`
 
 ```zsh
-# Deployment에서 사설 레지스트리(예: 192.168.x.x:5000)의 이미지를 pull 받을 때,
+# Deployment에서 Master 노드(192.168.0.101:5000)에 띄운 사설 레지스트리의 이미지를 pull 받을 때,
 # K3s(containerd)는 기본적으로 HTTPS만 허용하므로 HTTP 통신을 허용하도록 미리 등록해야 ImagePullBackOff 오류가 나지 않음.
-# (192.168.x.x 부분을 실제 사설 레지스트리 IP로 변경할 것)
 
 sudo mkdir -p /etc/rancher/k3s
 sudo tee /etc/rancher/k3s/registries.yaml <<EOF
 mirrors:
-  "192.168.x.x:5000":
+  "192.168.0.101:5000":
     endpoint:
-      - "http://192.168.x.x:5000"
+      - "http://192.168.0.101:5000"
 EOF
 
 # 참고: K3s 설치 전에 미리 만들어두면 설치 시 자동 반영되며,
@@ -371,7 +371,7 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=traefik -o wide
 
 ```zsh
 # taint 설정 (toleration이 없는 일반 앱 파드 및 kube-vip 파드가 마스터에 안 올라가고 워커에만 올라가도록 강제함)
-# 마스터 노드의 API Server와 스케줄러를 보호하기 위해 설정하며,
+# 마스터 노드의 API Server와 Docker 빌드 자원을 보호하기 위해 설정하며,
 # 반드시 5번(kube-vip 설치) 진행 전에 실행되어 있어야 kube-vip가 마스터 노드를 피해 워커 노드에만 설치됨
 kubectl taint nodes master-1 node-role.kubernetes.io/control-plane:NoSchedule --overwrite
 ```
@@ -717,7 +717,7 @@ spec:
                 topologyKey: "kubernetes.io/hostname"
       containers:
       - name: nest
-        image: 192.168.x.x:5000/nest:latest
+        image: 192.168.0.101:5000/nest:latest
         imagePullPolicy: Always
         command: ["node"]
         args: ["dist/main.js"]
@@ -933,7 +933,7 @@ spec:
         envFrom:
           - configMapRef:
               name: next-config
-        image: 192.168.x.x:5000/next:latest
+        image: 192.168.0.101:5000/next:latest
         imagePullPolicy: Always
         command: ["node"]
         args: ["server.js"]
