@@ -279,7 +279,7 @@ git remote set-url origin git@github.com:codej625/레포이름.git
 set -e
 
 REGISTRY="192.168.0.101:5000"
-NEXT_PUBLIC_API_URL="https://<사용하는 도메인>"
+NEXT_PUBLIC_API_URL="https://<사용하는 도메인>/api"
 GIT_ROOT="/<프로젝트 경로>"
 FRONTEND_PATH="$GIT_ROOT/front-end"
 BACKEND_PATH="$GIT_ROOT/back-end"
