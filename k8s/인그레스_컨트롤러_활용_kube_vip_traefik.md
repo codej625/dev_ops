@@ -303,8 +303,8 @@ EOF
 sudo mkdir -p /var/backups/postgres
 sudo chown postgres:postgres /var/backups/postgres
 
-# postgres 유저의 crontab에 매일 새벽 3시 DB 덤프 백업 등록 (pro_one 은 실제 DB 이름으로 변경)
-sudo crontab -u postgres -l 2>/dev/null | { cat; echo "0 3 * * * pg_dump -Fc pro_one > /var/backups/postgres/pro_one_\$(date +\%F).dump && find /var/backups/postgres/ -type f -mtime +7 -delete"; } | sudo crontab -u postgres -
+# postgres 유저의 crontab에 매일 새벽 3시 DB 덤프 백업 등록 (name 은 실제 DB 이름으로 변경)
+sudo crontab -u postgres -l 2>/dev/null | { cat; echo "0 3 * * * pg_dump -Fc name > /var/backups/postgres/name_\$(date +\%F).dump && find /var/backups/postgres/ -type f -mtime +7 -delete"; } | sudo crontab -u postgres -
 ```
 
 <br />
@@ -750,7 +750,8 @@ ISP(KT, SKB 등 일부 요금제)에서 80/443 포트를 차단하는 경우가 
 
 # 주의 4: 정적 파일 공유 폴더(/uploads) 볼륨 마운트
 # 2-7번 단계에서 각 워커 노드의 /uploads 에 마운트해 둔 Storage VM(192.168.0.105)의 NFS 폴더를
-# 파드 내부의 /uploads 로 연결(hostPath)하여 어느 워커 노드에 뜬 파드든 동일한 이미지/PDF/텍스트 파일에 접근할 수 있게 함.
+# nest 파드 내부의 /uploads 로 연결(hostPath)한다.
+# 파일 URL은 Nest가 /uploads 로 제공하므로 next Deployment에는 이 마운트를 넣지 않는다.
 ```
 
 <br />
@@ -928,17 +929,20 @@ spec:
 # 3. 적용: kubectl apply -f nest-secret.yaml
 #
 # 중요: DB가 별도 Hyper-V VM(예: 192.168.0.104)에 있으므로,
-# DATABASE_URL에는 외부 도메인(healthapp.shop)이 아니라 반드시 내부 사설 IP(192.168.0.104:5432)를 적어야
+# DATABASE_URL에는 외부 도메인이 아니라 반드시 내부 사설 IP(192.168.0.104:5432)를 적어야
 # 공유기를 거치지 않고 Hyper-V 내부 스위치를 통해 초고속으로 직접 통신함!
 #
 # 또는 한 번에 생성:
-#   kubectl create secret generic nest-secret \
-#     --from-literal=NODE_ENV=production \
-#     --from-literal=PORT=4000 \
-#     --from-literal=DATABASE_URL='postgresql://codej625:0625@192.168.0.104:5432/pro_one?schema=public' \
-#     --from-literal=JWT_SECRET='운영용-강한-랜덤-문자열' \
-#     --from-literal=CORS_ORIGIN='https://healthapp.shop' \
-#     -n default
+# kubectl create secret generic nest-secret \
+#   --from-literal=NODE_ENV=production \
+#   --from-literal=HOST=0.0.0.0 \
+#   --from-literal=PORT=4000 \
+#   --from-literal=UPLOAD_DIR=/uploads \
+#   --from-literal=DATABASE_URL='postgresql://codej625:0625@192.168.0.104:5432/db_name' \
+#   --from-literal=JWT_SECRET='운영용-강한-랜덤-문자열' \
+#   --from-literal=REFRESH_TOKEN_HASH_SECRET='운영용-다른-랜덤-문자열-32자-이상' \
+#   --from-literal=CORS_ORIGIN='https://{사용 도메인}' \
+#   -n default
 ---
 apiVersion: v1
 kind: Secret
@@ -948,29 +952,13 @@ metadata:
 type: Opaque
 stringData:
   NODE_ENV: "production"
+  HOST: "0.0.0.0"
   PORT: "4000"
-  # PostgreSQL 연결 문자열 (별도 DB VM의 사설 IP 사용 권장)
-  DATABASE_URL: "postgresql://{id}:{password}@192.168.0.104:5432/{database_name}?schema=public"
-  # 디비 연결 시 지연될 수 있을 때 사용 (커넥션 타임아웃 및 커넥션 풀 제한 옵션)
-  # DATABASE_URL: "postgresql://{id}:{password}@192.168.0.104:5432/{database_name}?schema=public&connect_timeout=30&connection_limit=20"
-  # JWT 서명용 시크릿 (운영에서 반드시 강한 랜덤 문자열로 변경)
+  UPLOAD_DIR: "/uploads"
+  DATABASE_URL: "postgresql://{id}:{password}@192.168.0.104:5432/{db_name}"
   JWT_SECRET: "REPLACE_WITH_STRONG_RANDOM_SECRET"
-  # CORS 허용 오리진 (프론트엔드 URL, 쉼표 여러 개 가능)
-  CORS_ORIGIN: "https://healthapp.shop"
-```
-
-<br />
-
-`next-configmap.yaml`
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: next-config
-  namespace: default
-data:
-  API_SERVER_URL: "https://healthapp.shop"
+  REFRESH_TOKEN_HASH_SECRET: "REPLACE_WITH_STRONG_RANDOM_HASH_SECRET"
+  CORS_ORIGIN: "https://{사용 도메인}"
 ```
 
 <br />
@@ -1016,18 +1004,12 @@ spec:
                 topologyKey: "kubernetes.io/hostname"
       containers:
       - name: next
-        envFrom:
-          - configMapRef:
-              name: next-config
         image: 192.168.0.101:5000/next:latest
         imagePullPolicy: Always
         command: ["node"]
         args: ["server.js"]
         ports:
         - containerPort: 3000
-        volumeMounts:
-        - name: uploads-volume
-          mountPath: /uploads
         lifecycle:
           preStop:
             exec:
@@ -1037,35 +1019,26 @@ spec:
             cpu: "200m"
             memory: "256Mi"
           limits:
-            cpu: "1500m"  # SSR 렌더링 스파이크 대비 1코어 이상 허용
+            cpu: "1500m"
             memory: "768Mi"
-        # 앱 초기화 완료 전까지 liveness/readiness 보호
-        # 초기화 로직 없으면 제거하고 livenessProbe initialDelaySeconds 복구
         startupProbe:
           httpGet:
-            path: /    # /health 엔드포인트 생기면 변경 권장
+            path: /
             port: 3000
-          failureThreshold: 30  # 최대 30 * 10초 = 300초 대기
+          failureThreshold: 30
           periodSeconds: 10
-        # 배포 시 준비될때까지 트래픽 안받음
         readinessProbe:
           httpGet:
-            path: /    # /health 엔드포인트 생기면 변경 권장
+            path: /
             port: 3000
-          initialDelaySeconds: 0  # startupProbe 가 대신함
+          initialDelaySeconds: 0
           periodSeconds: 5
-        # 운영중 먹통되면 자동 재시작
         livenessProbe:
           httpGet:
-            path: /    # /health 엔드포인트 생기면 변경 권장
+            path: /
             port: 3000
-          initialDelaySeconds: 0  # startupProbe 가 대신함
+          initialDelaySeconds: 0
           periodSeconds: 10
-      volumes:
-      - name: uploads-volume
-        hostPath:
-          path: /uploads
-          type: DirectoryOrCreate
 ```
 
 <br />
@@ -1147,7 +1120,6 @@ kubectl apply -f nest-hpa.yaml
 kubectl get svc nest-svc
 kubectl get endpoints nest-svc # Pod와 연결 확인
 
-kubectl apply -f next-configmap.yaml
 kubectl apply -f next-deployment.yaml
 kubectl apply -f next-svc.yaml
 kubectl apply -f next-pdb.yaml
