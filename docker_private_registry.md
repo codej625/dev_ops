@@ -16,7 +16,7 @@ Master Node에 직접 Private Registry를 띄워 Worker Node들이 이미지를 
    마스터 노드는 Taint 설정으로 인해 일반 서비스 파드가 뜨지 않아 평소에 유휴 자원이 많다.
 
    따라서 마스터 노드의 RAM(8GB~10GB)과 디스크(60GB+)를 넉넉히 할당한 뒤,
-   마스터 노드에서 Docker 빌드, Private Registry 운영, kubectl 배포 명령을 중앙 집중식으로 처리한다.
+   마스터 노드에서 Docker 빌드, Private Registry 운영, DB 마이그레이션, kubectl 배포 명령을 중앙 집중식으로 처리한다.
    (이 방식을 쓰면 배포 빌드 시 실제 서비스가 돌아가는 Worker 1, Worker 2에 CPU/RAM 부하를 주지 않는다.)
 
 
@@ -191,7 +191,8 @@ sudo systemctl restart k3s-agent
 기존 이미지 주소를 Master Node의 Private Registry 주소(192.168.0.101:5000)로 맞추고,
 imagePullPolicy를 Always로 설정하여 배포 시 항상 최신 이미지를 가져오게 한다.
 
-수정 후 kubectl apply로 한 번 적용해두면 이후엔 스크립트로만 배포 가능하다.
+최초 1회는 ./deploy.sh 를 실행하여 이미지를 먼저 빌드/푸시한 뒤,
+kubectl apply로 Deployment를 적용해두면 이후엔 ./deploy.sh 스크립트만으로 반자동 배포가 가능하다.
 ```
 
 <br />
@@ -254,16 +255,21 @@ git remote set-url origin git@github.com:codej625/레포이름.git
 <br />
 <br />
 
-6. 배포 스크립트 작성 (용량 극한 최적화 + 완벽한 롤백 보장)
+6. 배포 스크립트 작성 (용량 극한 최적화 + DB 자동 마이그레이션 + 완벽한 롤백 보장)
 
 ```
 * 스크립트 핵심 동작 원리
 1. 태그 무한 증식 방지 및 롤백 보장 (:latest 와 :rollback 태그 로테이션)
    - 새로 빌드하기 전, 레지스트리에 있는 현재 정상 이미지(:latest)를 가져와 직전 백업 태그(:rollback)로 덮어씌워 푸시한다.
+   - 최초 배포(1회차) 시에는 기존 이미지가 없으므로 이를 자동 감지하여 롤백 백업 단계를 안전하게 건너뛴다.
    - 이렇게 하면 별도의 무거운 .tar 백업 파일을 만들지 않아도, 배포 실패 시 즉시 :rollback 태그로 완벽한 롤백이 가능하다.
    - 동시에 2단계 이전의 구버전 이미지는 태그를 잃어버린 상태(Untagged)가 된다.
 
-2. 극한의 디스크 용량 확보
+2. 무중단 DB 마이그레이션 자동 실행
+   - 백엔드(NestJS) 이미지가 빌드된 직후, 쿠버네티스의 nest-secret에서 DATABASE_URL을 읽어와
+     새로 빌드된 이미지의 drizzle 마이그레이션(npm run db:migrate:prod)을 배포 전에 먼저 적용한다.
+
+3. 극한의 디스크 용량 확보
    - 배포 완료 후 Master Node의 Docker 이미지와 빌드 캐시를 전량 삭제(prune -a -f)한다.
    - 마지막으로 Registry 가비지 컬렉션(--delete-untagged)을 실행하여 태그를 잃은 구버전 이미지를 물리 디스크에서 완전히 지운다.
    - 결과적으로 레지스트리에는 언제나 현재 버전(:latest)과 직전 버전(:rollback) 딱 2벌의 용량만 유지된다.
@@ -276,7 +282,7 @@ git remote set-url origin git@github.com:codej625/레포이름.git
 ```zsh
 #!/usr/bin/env bash
 
-set -e
+set -euo pipefail
 
 REGISTRY="192.168.0.101:5000"
 NEXT_PUBLIC_API_URL="https://<사용하는 도메인>/api"
@@ -290,9 +296,12 @@ NEXT_ROLLBACK="$REGISTRY/next:rollback"
 NEST_LATEST="$REGISTRY/nest:latest"
 NEST_ROLLBACK="$REGISTRY/nest:rollback"
 
+HAS_NEXT_ROLLBACK=false
+HAS_NEST_ROLLBACK=false
+
 echo "=== 1. Registry 컨테이너 상태 확인 ==="
-if [ ! "$(docker ps -q -f name=registry)" ]; then
-    if [ "$(docker ps -aq -f status=exited -f name=registry)" ]; then
+if [ ! "$(docker ps -q -f name=^registry$)" ]; then
+    if [ "$(docker ps -aq -f status=exited -f name=^registry$)" ]; then
         docker start registry
     else
         docker run -d --name registry --restart always -p 5000:5000 \
@@ -307,11 +316,17 @@ echo "=== 2. 기존 정상 이미지를 :rollback 태그로 백업 (태그 로�
 if docker pull "$NEXT_LATEST" >/dev/null 2>&1; then
     docker tag "$NEXT_LATEST" "$NEXT_ROLLBACK"
     docker push "$NEXT_ROLLBACK"
+    HAS_NEXT_ROLLBACK=true
+else
+    echo "[안내] 기존 next:latest 이미지가 없습니다 (최초 배포)."
 fi
 
 if docker pull "$NEST_LATEST" >/dev/null 2>&1; then
     docker tag "$NEST_LATEST" "$NEST_ROLLBACK"
     docker push "$NEST_ROLLBACK"
+    HAS_NEST_ROLLBACK=true
+else
+    echo "[안내] 기존 nest:latest 이미지가 없습니다 (최초 배포)."
 fi
 
 echo "=== 3. Git Pull ==="
@@ -324,64 +339,83 @@ docker build \
   -t "$NEXT_LATEST" \
   "$FRONTEND_PATH"
 docker push "$NEXT_LATEST"
+
 docker build -t "$NEST_LATEST" "$BACKEND_PATH"
 docker push "$NEST_LATEST"
 
-echo "=== 5. Kubernetes 배포 (Next.js) ==="
-kubectl set image deployment/next next="$NEXT_LATEST"
-kubectl rollout restart deployment/next
+echo "=== 5. DB 마이그레이션 적용 (Drizzle) ==="
+# k8s의 nest-secret에서 DATABASE_URL과 DATABASE_SSL을 읽어와 파드 배포 전에 DB 스키마를 최신화함
+DB_URL=$(kubectl get secret nest-secret -n default -o jsonpath='{.data.DATABASE_URL}' | base64 -d)
+DB_SSL=$(kubectl get secret nest-secret -n default -o jsonpath='{.data.DATABASE_SSL}' | base64 -d 2>/dev/null || echo "false")
 
-if kubectl rollout status deployment/next --timeout=360s; then
-  echo "[성공] next 배포 완료."
-else
-  echo "[실패] next 배포 실패. 직전 이미지(:rollback)로 즉시 복구합니다."
-  kubectl set image deployment/next next="$NEXT_ROLLBACK"
-  kubectl rollout status deployment/next --timeout=180s || true
+docker run --rm \
+  -e DATABASE_URL="$DB_URL" \
+  -e DATABASE_SSL="${DB_SSL:-false}" \
+  "$NEST_LATEST" \
+  npm run db:migrate:prod
 
-  docker pull "$NEXT_ROLLBACK"
-  docker tag "$NEXT_ROLLBACK" "$NEXT_LATEST"
-  docker push "$NEXT_LATEST"
-
-  docker pull "$NEST_ROLLBACK"
-  docker tag "$NEST_ROLLBACK" "$NEST_LATEST"
-  docker push "$NEST_LATEST"
-  exit 1
-fi
-
-echo "=== 6. Kubernetes 배포 (NestJS) ==="
+echo "=== 6. Kubernetes 배포 (NestJS 백엔드 먼저 배포) ==="
 kubectl set image deployment/nest nest="$NEST_LATEST"
 kubectl rollout restart deployment/nest
 
 if kubectl rollout status deployment/nest --timeout=360s; then
   echo "[성공] nest 배포 완료."
 else
-  echo "[실패] nest 배포 실패. 전체 서비스를 직전 이미지(:rollback)로 즉시 복구합니다..."
-  kubectl set image deployment/nest nest="$NEST_ROLLBACK"
-  kubectl set image deployment/next next="$NEXT_ROLLBACK"
-  kubectl rollout status deployment/nest --timeout=180s || true
-  kubectl rollout status deployment/next --timeout=180s || true
+  echo "[실패] nest 배포 실패. 직전 이미지(:rollback)로 즉시 복구합니다..."
+  if [ "$HAS_NEST_ROLLBACK" = true ]; then
+    kubectl set image deployment/nest nest="$NEST_ROLLBACK"
+    kubectl rollout status deployment/nest --timeout=180s || true
 
-  docker pull "$NEXT_ROLLBACK"
-  docker tag "$NEXT_ROLLBACK" "$NEXT_LATEST"
-  docker push "$NEXT_LATEST"
-
-  docker pull "$NEST_ROLLBACK"
-  docker tag "$NEST_ROLLBACK" "$NEST_LATEST"
-  docker push "$NEST_LATEST"
+    docker pull "$NEST_ROLLBACK"
+    docker tag "$NEST_ROLLBACK" "$NEST_LATEST"
+    docker push "$NEST_LATEST"
+  fi
+  if [ "$HAS_NEXT_ROLLBACK" = true ]; then
+    docker pull "$NEXT_ROLLBACK"
+    docker tag "$NEXT_ROLLBACK" "$NEXT_LATEST"
+    docker push "$NEXT_LATEST"
+  fi
   exit 1
 fi
 
-echo "=== 7. Master Node 로컬 Docker 이미지 및 빌드 캐시 전체 삭제 (용량 확보) ==="
+echo "=== 7. Kubernetes 배포 (Next.js 프론트엔드 배포) ==="
+kubectl set image deployment/next next="$NEXT_LATEST"
+kubectl rollout restart deployment/next
+
+if kubectl rollout status deployment/next --timeout=360s; then
+  echo "[성공] next 배포 완료."
+else
+  echo "[실패] next 배포 실패. 전체 서비스를 직전 이미지(:rollback)로 즉시 복구합니다..."
+  if [ "$HAS_NEXT_ROLLBACK" = true ]; then
+    kubectl set image deployment/next next="$NEXT_ROLLBACK"
+    kubectl rollout status deployment/next --timeout=180s || true
+
+    docker pull "$NEXT_ROLLBACK"
+    docker tag "$NEXT_ROLLBACK" "$NEXT_LATEST"
+    docker push "$NEXT_LATEST"
+  fi
+  if [ "$HAS_NEST_ROLLBACK" = true ]; then
+    kubectl set image deployment/nest nest="$NEST_ROLLBACK"
+    kubectl rollout status deployment/nest --timeout=180s || true
+
+    docker pull "$NEST_ROLLBACK"
+    docker tag "$NEST_ROLLBACK" "$NEST_LATEST"
+    docker push "$NEST_LATEST"
+  fi
+  exit 1
+fi
+
+echo "=== 8. Master Node 로컬 Docker 이미지 및 빌드 캐시 전체 삭제 (용량 확보) ==="
 docker system prune -a -f
 docker builder prune -a -f
 
-echo "=== 8. Registry 가비지 컬렉션 실행 (태그 잃은 구버전 영구 삭제) ==="
+echo "=== 9. Registry 가비지 컬렉션 실행 (태그 잃은 구버전 영구 삭제) ==="
 docker exec registry bin/registry garbage-collect \
   --delete-untagged \
   /etc/docker/registry/config.yml
 docker restart registry
 
-echo "=== 9. 배포 및 용량 최적화 완료 ==="
+echo "=== 10. 배포 및 용량 최적화 완료 ==="
 ```
 
 ```zsh
