@@ -278,7 +278,7 @@ EOF
 # PostgreSQL 설치 후 기본 설정은 메모리를 128MB만 쓰도록 되어 있어 할당된 12GB RAM을 전혀 활용하지 못함
 # 반드시 아래 설정을 postgresql.conf 및 pg_hba.conf 에 적용할 것.
 
-# 1. 외부(워커 노드 및 개발 서버) 접속 허용 설정
+# 1. 외부(워커 노드, 마스터 노드, 개발 서버) 접속 허용 설정
 # /etc/postgresql/<버전>/main/postgresql.conf 파일 수정:
 # listen_addresses = '*'
 
@@ -290,7 +290,7 @@ EOF
 # effective_cache_size = 9GB            # 전체 RAM(12GB)의 75%
 # maintenance_work_mem = 768MB
 # work_mem = 16MB
-# max_connections = 200                 # Nest 파드가 최대 4개로 늘어날 때의 커넥션 풀 여유분 확보
+# max_connections = 200                 # Nest 파드가 최대 4개로 늘어날 때(파드당 풀 10개 = 40개)의 충분한 여유분 확보
 # random_page_cost = 1.1                # SSD 환경 최적화
 
 # 설정 변경 후 재시작
@@ -303,8 +303,8 @@ EOF
 sudo mkdir -p /var/backups/postgres
 sudo chown postgres:postgres /var/backups/postgres
 
-# postgres 유저의 crontab에 매일 새벽 3시 DB 덤프 백업 등록 (name 은 실제 DB 이름으로 변경)
-sudo crontab -u postgres -l 2>/dev/null | { cat; echo "0 3 * * * pg_dump -Fc name > /var/backups/postgres/name_\$(date +\%F).dump && find /var/backups/postgres/ -type f -mtime +7 -delete"; } | sudo crontab -u postgres -
+# postgres 유저의 crontab에 매일 새벽 3시 DB 덤프 백업 등록 (raddot_console 은 실제 DB 이름으로 변경)
+sudo crontab -u postgres -l 2>/dev/null | { cat; echo "0 3 * * * pg_dump -Fc raddot_console > /var/backups/postgres/raddot_console_\$(date +\%F).dump && find /var/backups/postgres/ -type f -mtime +7 -delete"; } | sudo crontab -u postgres -
 ```
 
 <br />
@@ -372,6 +372,7 @@ sudo mkdir -p /var/lib/rancher/k3s/server/manifests
 # - replicas: 2 로 설정하여 워커 노드에 각각 파드가 떠서 가용성 및 부하 분산 확보
 # - externalTrafficPolicy: Cluster (기본값)를 유지하여 VIP가 어느 워커에 잡히든
 #   kube-proxy가 워커1, 워커2의 Traefik 파드로 트래픽을 균등하게 로드밸런싱하도록 함
+# - forwardedHeaders.trustedIPs 설정을 통해 NestJS(trust proxy)가 실제 클라이언트 IP를 정확히 인식하도록 구성
 sudo tee /var/lib/rancher/k3s/server/manifests/traefik-config.yaml > /dev/null <<EOF
 apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
@@ -382,6 +383,19 @@ spec:
   valuesContent: |-
     deployment:
       replicas: 2
+    ports:
+      web:
+        forwardedHeaders:
+          trustedIPs:
+            - 10.42.0.0/16
+            - 10.43.0.0/16
+            - 192.168.0.0/24
+      websecure:
+        forwardedHeaders:
+          trustedIPs:
+            - 10.42.0.0/16
+            - 10.43.0.0/16
+            - 192.168.0.0/24
     affinity:
       podAntiAffinity:
         preferredDuringSchedulingIgnoredDuringExecution:
@@ -434,9 +448,10 @@ chmod 600 ~/.kube/config
 # 외부 접근이 필요한 경우 server 주소를 실제 마스터 IP로 교체
 sed -i "s/127.0.0.1/192.168.0.101/g" ~/.kube/config
 
-# 영구 적용
+# 영구 적용 (bash 및 zsh 모두 대응)
 echo 'export KUBECONFIG=~/.kube/config' >> ~/.bashrc
-source ~/.bashrc
+[ -f ~/.zshrc ] && echo 'export KUBECONFIG=~/.kube/config' >> ~/.zshrc
+export KUBECONFIG=~/.kube/config
 
 # 노드 및 Traefik 파드 개수 확인 (2개가 떠야 함)
 kubectl get nodes
@@ -751,7 +766,12 @@ ISP(KT, SKB 등 일부 요금제)에서 80/443 포트를 차단하는 경우가 
 # 주의 4: 정적 파일 공유 폴더(/uploads) 볼륨 마운트
 # 2-7번 단계에서 각 워커 노드의 /uploads 에 마운트해 둔 Storage VM(192.168.0.105)의 NFS 폴더를
 # nest 파드 내부의 /uploads 로 연결(hostPath)한다.
-# 파일 URL은 Nest가 /uploads 로 제공하므로 next Deployment에는 이 마운트를 넣지 않는다.
+# 프론트엔드는 NEXT_PUBLIC_API_URL(https://도메인/api)을 통해 /api/uploads/... 로 파일을 요청하며,
+# Traefik이 /api 접두사를 제거한 뒤 Nest(/uploads/...)로 전달하므로 next Deployment에는 이 마운트를 넣지 않는다.
+
+# 주의 5: Next.js 프로브(Probe) 경로는 반드시 / 가 아닌 /login 으로 설정!
+# raddot_console 프론트엔드의 루트 경로(/)는 /login 으로 307 Redirect를 반환하도록 설계되어 있음.
+# 따라서 프로브 경로를 200 OK를 즉시 반환하는 /login 으로 지정해야 확실하게 정상 상태를 검증할 수 있음.
 ```
 
 <br />
@@ -820,24 +840,23 @@ spec:
             cpu: "1000m"
             memory: "512Mi"
         # 앱 초기화 완료 전까지 liveness/readiness 보호
-        # 초기화 로직 없으면 제거하고 livenessProbe initialDelaySeconds 복구
         startupProbe:
           httpGet:
-            path: /health # 엔드포인트 생기면 변경 권장
+            path: /health
             port: 4000
           failureThreshold: 30   # 최대 30 * 10초 = 300초 대기
           periodSeconds: 10
         # 운영중 먹통되면 자동 재시작
         livenessProbe:
           httpGet:
-            path: /health # 엔드포인트 생기면 변경 권장
+            path: /health
             port: 4000
           initialDelaySeconds: 0 # startupProbe 가 대신함
           periodSeconds: 10
         # 배포 시 준비될때까지 트래픽 안받음
         readinessProbe:
           httpGet:
-            path: /health # 엔드포인트 생기면 변경 권장
+            path: /health
             port: 4000
           initialDelaySeconds: 0 # startupProbe 가 대신함
           periodSeconds: 5
@@ -928,19 +947,24 @@ spec:
 # 2. nest-secret.yaml 은 .gitignore에 넣고 커밋하지 마세요.
 # 3. 적용: kubectl apply -f nest-secret.yaml
 #
-# 중요: DB가 별도 Hyper-V VM(예: 192.168.0.104)에 있으므로,
+# 중요 1: DB가 별도 Hyper-V VM(예: 192.168.0.104)에 있으므로,
 # DATABASE_URL에는 외부 도메인이 아니라 반드시 내부 사설 IP(192.168.0.104:5432)를 적어야
 # 공유기를 거치지 않고 Hyper-V 내부 스위치를 통해 초고속으로 직접 통신함!
 #
+# 중요 2: JWT_SECRET 과 REFRESH_TOKEN_HASH_SECRET 은 반드시 서로 다른 32자 이상의 랜덤 문자열이어야 함!
+# (32자 미만이면 Zod 환경변수 검증에서 실패하여 파드가 기동되지 않음)
+#
 # 또는 한 번에 생성:
 # kubectl create secret generic nest-secret \
-#   --from-literal=NODE_ENV=production \
+#   --from-literal=NODE_ENV=prd \
 #   --from-literal=HOST=0.0.0.0 \
 #   --from-literal=PORT=4000 \
 #   --from-literal=UPLOAD_DIR=/uploads \
 #   --from-literal=DATABASE_URL='postgresql://{id}:{pw}@192.168.0.104:5432/{db_name}' \
-#   --from-literal=JWT_SECRET='운영용-강한-랜덤-문자열' \
-#   --from-literal=REFRESH_TOKEN_HASH_SECRET='운영용-다른-랜덤-문자열-32자-이상' \
+#   --from-literal=DATABASE_SSL=false \
+#   --from-literal=DATABASE_POOL_MAX=10 \
+#   --from-literal=JWT_SECRET='운영용-강한-랜덤-문자열-반드시-32자-이상으로-작성' \
+#   --from-literal=REFRESH_TOKEN_HASH_SECRET='운영용-다른-랜덤-문자열-반드시-32자-이상으로-작성' \
 #   --from-literal=CORS_ORIGIN='https://{domain_name}' \
 #   -n default
 ---
@@ -951,13 +975,15 @@ metadata:
   namespace: default
 type: Opaque
 stringData:
-  NODE_ENV: "production"
+  NODE_ENV: "prd"
   HOST: "0.0.0.0"
   PORT: "4000"
   UPLOAD_DIR: "/uploads"
   DATABASE_URL: "postgresql://{id}:{password}@192.168.0.104:5432/{db_name}"
-  JWT_SECRET: "REPLACE_WITH_STRONG_RANDOM_SECRET"
-  REFRESH_TOKEN_HASH_SECRET: "REPLACE_WITH_STRONG_RANDOM_HASH_SECRET"
+  DATABASE_SSL: "false"
+  DATABASE_POOL_MAX: "10"
+  JWT_SECRET: "REPLACE_WITH_STRONG_RANDOM_SECRET_AT_LEAST_32_CHARS"
+  REFRESH_TOKEN_HASH_SECRET: "REPLACE_WITH_DIFFERENT_STRONG_RANDOM_HASH_SECRET_32_CHARS"
   CORS_ORIGIN: "https://{domain_name}"
 ```
 
@@ -1023,19 +1049,19 @@ spec:
             memory: "768Mi"
         startupProbe:
           httpGet:
-            path: /
+            path: /login
             port: 3000
           failureThreshold: 30
           periodSeconds: 10
         readinessProbe:
           httpGet:
-            path: /
+            path: /login
             port: 3000
           initialDelaySeconds: 0
           periodSeconds: 5
         livenessProbe:
           httpGet:
-            path: /
+            path: /login
             port: 3000
           initialDelaySeconds: 0
           periodSeconds: 10
@@ -1112,27 +1138,30 @@ spec:
 <br />
 
 ```zsh
+# 1) 시크릿을 가장 먼저 적용 (deploy.sh의 DB 마이그레이션 및 nest 파드 기동에 필수)
 kubectl apply -f nest-secret.yaml
+
+# 2) 최초 1회 배포 스크립트 실행 전, 매니페스트들을 클러스터에 등록
 kubectl apply -f nest-deployment.yaml
 kubectl apply -f nest-svc.yaml
 kubectl apply -f nest-pdb.yaml
 kubectl apply -f nest-hpa.yaml
-kubectl get svc nest-svc
-kubectl get endpoints nest-svc # Pod와 연결 확인
 
 kubectl apply -f next-deployment.yaml
 kubectl apply -f next-svc.yaml
 kubectl apply -f next-pdb.yaml
 kubectl apply -f next-hpa.yaml
-kubectl get svc next-svc
-kubectl get endpoints next-svc # Pod와 연결 확인
+
+# 3) 이어서 ./deploy.sh 를 실행하여 이미지를 빌드/푸시하고 파드가 Running이 되면 Endpoint 연결 확인
+kubectl get svc nest-svc next-svc
+kubectl get endpoints nest-svc next-svc # 각 Pod IP와 연결되었는지 확인
 ```
 
 <br />
 <br />
 <br />
 
-11. IngressClass (IngressRoute 방식 사용 시 IngressClass 불필요)
+11. IngressClass (IngressRoute 방식 사용 시에도 cert-manager HTTP01 solver를 위해 확인 필수)
 
 `ingressclass-traefik.yaml`
 
@@ -1157,7 +1186,7 @@ kubectl get ingressclass
 # traefik 항목이 없을 때만 실행
 kubectl apply -f ingressclass-traefik.yaml
 
-# Ingress 리소스 방식(cert-manager HTTP01 solver 포함) 사용 시 필요
+# cert-manager HTTP01 solver가 임시 Ingress를 생성할 때 class: traefik 을 참조하므로 반드시 존재해야 함
 ```
 
 <br />
@@ -1177,10 +1206,13 @@ kubectl get clusterissuer letsencrypt-prod
 `ingressroute.yaml`
 
 ```yaml
-# 경로로 나누기 - strip-api-prefix 미들웨어 포함 버전
+# 경로로 나누기 - strip-api-prefix 미들웨어 포함 버전 (raddot_console 기본 사용 버전)
+# 주의: raddot_console의 백엔드 컨트롤러는 /api 접두사 없이(/auth/login, /uploads 등) 매핑되어 있고,
+# 프론트엔드는 NEXT_PUBLIC_API_URL=https://도메인/api 로 요청을 보내므로 반드시 이 버전을 사용해야 함!
 
 # ----- HTTP (80) -----
-# {domain_name} → HTTPS로 리다이렉트 후 next-svc(프론트)로
+# Let's Encrypt HTTP01 인증서 발급/갱신 경로(/.well-known/acme-challenge/)는 리다이렉트에서 제외하여
+# cert-manager의 solver Ingress가 정상 처리하도록 보장하고, 그 외 모든 HTTP 요청은 HTTPS로 리다이렉트함
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -1190,7 +1222,7 @@ spec:
   entryPoints:
     - web
   routes:
-  - match: Host(`domain_name`)
+  - match: Host(`domain_name`) && !PathPrefix(`/.well-known/acme-challenge/`)
     kind: Rule
     middlewares:
     - name: redirect-https
@@ -1199,7 +1231,8 @@ spec:
       port: 3000
 ---
 # ----- HTTPS (443) -----
-# - /api/* → nest-svc(백엔드). strip-api-prefix로 /api 제거 후 전달 (예: /api/auth/login → /auth/login)
+# - /api/* → nest-svc(백엔드). strip-api-prefix로 /api 제거 후 전달
+#   (예: /api/auth/login → /auth/login, /api/uploads/2026/10/a.png → /uploads/2026/10/a.png)
 # - 그 외 → next-svc(프론트)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -1233,8 +1266,8 @@ spec:
 
 
 ```yaml
-# 경로로 나누기 - 미들웨어 없이 /api 그대로 전달하는 버전
-# (백엔드가 /api 접두사를 직접 처리하는 경우)
+# (참고용) 경로로 나누기 - 미들웨어 없이 /api 그대로 전달하는 버전
+# 백엔드가 /api 접두사를 직접 처리하는 다른 프로젝트에서만 사용 (raddot_console에서는 사용하지 않음)
 
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -1245,7 +1278,7 @@ spec:
   entryPoints:
     - web
   routes:
-  - match: Host(`domain_name`)
+  - match: Host(`domain_name`) && !PathPrefix(`/.well-known/acme-challenge/`)
     kind: Rule
     middlewares:
     - name: redirect-https
@@ -1302,6 +1335,7 @@ spec:
 ```yaml
 # Traefik 미들웨어: 요청 경로에서 /api 제거
 # 프론트는 /api/auth/login 으로 보내고, 백엔드(nest)는 /auth/login 만 받도록 함.
+# 정적 파일 역시 프론트가 /api/uploads/... 로 요청하면 /uploads/... 로 변환되어 Nest 정적 에셋 서버가 응답함.
 # 적용: ingressroute.yaml 의 /api 라우트에서 이 미들웨어 참조.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -1349,7 +1383,7 @@ spec:
     name: letsencrypt-prod
     kind: ClusterIssuer
   dnsNames:
-  - {domain_name}
+  - "domain_name"
 ```
 
 <br />
@@ -1472,7 +1506,7 @@ spec:
     name: letsencrypt-prod
     kind: ClusterIssuer
   dnsNames:
-  - {domain_name}
+  - "domain_name"
   renewBefore: 720h  # 만료 30일 전 갱신 (예시값). 더 일찍 갱신하려면 값을 높임 (예: 1440h = 60일 전)
 ```
 
