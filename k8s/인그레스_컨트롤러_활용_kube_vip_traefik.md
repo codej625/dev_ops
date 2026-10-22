@@ -217,6 +217,7 @@ sudo ufw allow 51820/udp       # Flannel WireGuard (암호화 모드 사용 시)
 sudo ufw allow from 192.168.0.0/24 to any port 5000 proto tcp # Master 노드의 Private Registry 접근 허용
 sudo ufw allow from 10.42.0.0/16 to any
 sudo ufw allow from 10.43.0.0/16 to any
+sudo ufw allow from 172.16.0.0/12 to any # Master 노드의 Docker 빌드 및 DB 마이그레이션 컨테이너 통신 허용
 sudo ufw enable
 ```
 
