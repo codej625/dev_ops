@@ -37,7 +37,7 @@ Master Node에 직접 Private Registry를 띄워 Worker Node들이 이미지를 
 <br />
 <br />
 
-1. Master Node에 Private Registry 띄우기
+1. Master Node에 Docker 설치 및 Private Registry 띄우기
 
 ```
 RAM을 넉넉히(8GB~10GB) 할당한 "Master Node (예: 192.168.0.101)"에 Docker를 설치하고 경량 Registry 컨테이너를 실행한다.
@@ -52,11 +52,17 @@ Worker 노드들이 접근할 수 있도록 Master Node의 방화벽에서 5000�
 <br />
 
 ```zsh
-# Master Node 방화벽에서 5000번 포트 허용 (사설망 내부 Worker 노드들의 이미지 Pull 허용)
+# 1) Master Node에 Docker 설치 및 현재 사용자 권한 부여 (최초 1회)
+sudo apt-get update && sudo apt-get install -y docker.io
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+newgrp docker
+
+# 2) Master Node 방화벽에서 5000번 포트 허용 (사설망 내부 Worker 노드들의 이미지 Pull 허용)
 sudo ufw allow from 192.168.0.0/24 to any port 5000 proto tcp
 sudo ufw reload
 
-# 설정 파일 및 데이터 저장용 디렉토리 생성
+# 3) 설정 파일 및 데이터 저장용 디렉토리 생성
 mkdir -p /home/codej625/yaml
 mkdir -p /home/codej625/registry-data
 ```
@@ -255,14 +261,14 @@ git remote set-url origin git@github.com:codej625/레포이름.git
 ```
 * 스크립트 핵심 동작 원리
 1. 태그 무한 증식 방지 및 롤백 보장 (:latest 와 :rollback 태그 로테이션)
-   - 새로 빌드하기 전, 레지스트리에 있는 현재 정상 이미지(:latest)를 가져와 직전 백업 태그(:rollback)로 덮어씌워 푸시한다.
+   - 먼저 git pull, 로컬 Docker 빌드, DB 마이그레이션까지 모두 성공한 뒤에야
+     기존에 레지스트리에 있던 정상 이미지(:latest)를 직전 백업 태그(:rollback)로 보존하고 새 이미지를 :latest로 푸시한다.
+   - 만약 git pull이나 빌드, DB 마이그레이션 도중 에러가 나면 레지스트리의 기존 :latest 및 :rollback 이미지는 전혀 오염되지 않는다.
    - 최초 배포(1회차) 시에는 기존 이미지가 없으므로 이를 자동 감지하여 롤백 백업 단계를 안전하게 건너뛴다.
-   - 이렇게 하면 별도의 무거운 .tar 백업 파일을 만들지 않아도, 배포 실패 시 즉시 :rollback 태그로 완벽한 롤백이 가능하다.
-   - 동시에 2단계 이전의 구버전 이미지는 태그를 잃어버린 상태(Untagged)가 된다.
 
 2. 무중단 DB 마이그레이션 자동 실행
    - 백엔드(NestJS) 이미지가 빌드된 직후, 쿠버네티스의 nest-secret에서 DATABASE_URL을 읽어와
-     새로 빌드된 이미지의 drizzle 마이그레이션(npm run db:migrate:prod)을 배포 전에 먼저 적용한다.
+     새로 빌드된 이미지의 drizzle 마이그레이션(npm run db:migrate:prod)을 파드 배포 전에 먼저 적용한다.
 
 3. 극한의 디스크 용량 확보
    - 배포 완료 후 Master Node의 Docker 이미지와 빌드 캐시를 전량 삭제(prune -a -f)한다.
@@ -307,11 +313,13 @@ if [ ! "$(docker ps -q -f name=^registry$)" ]; then
     fi
 fi
 
-echo "=== 2. 기존 정상 이미지를 :rollback 태그로 백업 (태그 로테이션) ==="
-# 기존 latest 이미지가 레지스트리에 있다면 pull 받아서 rollback 태그로 덮어써서 push 해둠
+echo "=== 2. Git Pull ==="
+cd "$GIT_ROOT" || exit 1
+git pull
+
+echo "=== 3. 기존 정상 이미지를 로컬에 :rollback 태그로 임시 확보 ==="
 if docker pull "$NEXT_LATEST" >/dev/null 2>&1; then
     docker tag "$NEXT_LATEST" "$NEXT_ROLLBACK"
-    docker push "$NEXT_ROLLBACK"
     HAS_NEXT_ROLLBACK=true
 else
     echo "[안내] 기존 next:latest 이미지가 없습니다 (최초 배포)."
@@ -319,25 +327,18 @@ fi
 
 if docker pull "$NEST_LATEST" >/dev/null 2>&1; then
     docker tag "$NEST_LATEST" "$NEST_ROLLBACK"
-    docker push "$NEST_ROLLBACK"
     HAS_NEST_ROLLBACK=true
 else
     echo "[안내] 기존 nest:latest 이미지가 없습니다 (최초 배포)."
 fi
 
-echo "=== 3. Git Pull ==="
-cd "$GIT_ROOT" || exit 1
-git pull
-
-echo "=== 4. Docker Build & Push (순차 빌드) ==="
+echo "=== 4. 로컬 Docker Build (순차 빌드) ==="
 docker build \
   --build-arg NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
   -t "$NEXT_LATEST" \
   "$FRONTEND_PATH"
-docker push "$NEXT_LATEST"
 
 docker build -t "$NEST_LATEST" "$BACKEND_PATH"
-docker push "$NEST_LATEST"
 
 echo "=== 5. DB 마이그레이션 적용 (Drizzle) ==="
 # k8s의 nest-secret에서 DATABASE_URL과 DATABASE_SSL을 읽어와 파드 배포 전에 DB 스키마를 최신화함
@@ -350,7 +351,18 @@ docker run --rm \
   "$NEST_LATEST" \
   npm run db:migrate:prod
 
-echo "=== 6. Kubernetes 배포 (NestJS 백엔드 먼저 배포) ==="
+echo "=== 6. 빌드 및 마이그레이션 검증 완료 -> Registry에 이미지 Push ==="
+if [ "$HAS_NEXT_ROLLBACK" = true ]; then
+    docker push "$NEXT_ROLLBACK"
+fi
+if [ "$HAS_NEST_ROLLBACK" = true ]; then
+    docker push "$NEST_ROLLBACK"
+fi
+
+docker push "$NEXT_LATEST"
+docker push "$NEST_LATEST"
+
+echo "=== 7. Kubernetes 배포 (NestJS 백엔드 먼저 배포) ==="
 kubectl apply -f "$YAML_DIR/nest-deployment.yaml"
 kubectl set image deployment/nest nest="$NEST_LATEST"
 kubectl rollout restart deployment/nest
@@ -375,7 +387,7 @@ else
   exit 1
 fi
 
-echo "=== 7. Kubernetes 배포 (Next.js 프론트엔드 배포) ==="
+echo "=== 8. Kubernetes 배포 (Next.js 프론트엔드 배포) ==="
 kubectl apply -f "$YAML_DIR/next-deployment.yaml"
 kubectl set image deployment/next next="$NEXT_LATEST"
 kubectl rollout restart deployment/next
@@ -403,17 +415,17 @@ else
   exit 1
 fi
 
-echo "=== 8. Master Node 로컬 Docker 이미지 및 빌드 캐시 전체 삭제 (용량 확보) ==="
+echo "=== 9. Master Node 로컬 Docker 이미지 및 빌드 캐시 전체 삭제 (용량 확보) ==="
 docker system prune -a -f
 docker builder prune -a -f
 
-echo "=== 9. Registry 가비지 컬렉션 실행 (태그 잃은 구버전 영구 삭제) ==="
+echo "=== 10. Registry 가비지 컬렉션 실행 (태그 잃은 구버전 영구 삭제) ==="
 docker exec registry bin/registry garbage-collect \
   --delete-untagged \
   /etc/docker/registry/config.yml
 docker restart registry
 
-echo "=== 10. 배포 및 용량 최적화 완료 ==="
+echo "=== 11. 배포 및 용량 최적화 완료 ==="
 ```
 
 ```zsh
