@@ -191,9 +191,8 @@ sudo systemctl restart k3s-agent
 기존 이미지 주소를 Master Node의 Private Registry 주소(192.168.0.101:5000)로 맞추고,
 imagePullPolicy를 Always로 설정하여 배포 시 항상 최신 이미지를 가져오게 한다.
 
-최초 1회 구축 시에는 Secret과 Deployment를 먼저 kubectl apply로 클러스터에 등록해 둔 뒤,
-./deploy.sh 를 실행하면 이미지 빌드/푸시와 동시에 파드가 정상적으로 뜨며 이후엔 ./deploy.sh 만으로 배포 가능하다.
-(이미지가 아직 레지스트리에 없으므로 apply 직후엔 잠시 ImagePullBackOff 상태가 되지만, 곧바로 ./deploy.sh 가 돌면서 즉시 Running 으로 전환된다.)
+최초 1회는 kubectl apply로 Secret과 Deployment를 먼저 클러스터에 등록한 뒤,
+./deploy.sh 를 실행하여 이미지를 빌드/푸시하면 이후엔 ./deploy.sh 스크립트만으로 반자동 배포가 가능하다.
 ```
 
 <br />
@@ -215,10 +214,9 @@ containers:
 ```
 
 ```zsh
-# Secret 및 Deployment 최초 1회 등록 (Master Node에서 실행)
-kubectl apply -f /home/codej625/yaml/nest-secret.yaml
-kubectl apply -f /home/codej625/yaml/nest-deployment.yaml
+# deployment 적용 (Master Node에서 실행)
 kubectl apply -f /home/codej625/yaml/next-deployment.yaml
+kubectl apply -f /home/codej625/yaml/nest-deployment.yaml
 ```
 
 <br />
