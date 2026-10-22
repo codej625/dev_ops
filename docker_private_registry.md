@@ -185,14 +185,16 @@ sudo systemctl restart k3s-agent
 <br />
 <br />
 
-4. Deployment yaml 수정 및 적용
+4. Deployment yaml 파일 준비 및 이미지 경로 확인
 
 ```
 기존 이미지 주소를 Master Node의 Private Registry 주소(192.168.0.101:5000)로 맞추고,
 imagePullPolicy를 Always로 설정하여 배포 시 항상 최신 이미지를 가져오게 한다.
 
-최초 1회는 kubectl apply로 Secret과 Deployment를 먼저 클러스터에 등록한 뒤,
-./deploy.sh 를 실행하여 이미지를 빌드/푸시하면 이후엔 ./deploy.sh 스크립트만으로 반자동 배포가 가능하다.
+/home/codej625/yaml/ 경로에 매니페스트 파일들을 준비해 두고,
+최초 1회 nest-secret.yaml 만 먼저 apply 한 뒤 ./deploy.sh 를 실행하면
+스크립트가 이미지를 먼저 빌드/푸시한 후 Deployment를 자동으로 클러스터에 등록(apply)하므로
+첫 배포 시에도 ImagePullBackOff 없이 깔끔하게 기동된다.
 ```
 
 <br />
@@ -200,13 +202,13 @@ imagePullPolicy를 Always로 설정하여 배포 시 항상 최신 이미지를 
 `next-deployment.yaml 및 nest-deployment.yaml 내 이미지 경로 확인`
 
 ```yaml
-# next-deployment.yaml 예시
+# /home/codej625/yaml/next-deployment.yaml 예시
 containers:
   - name: next
     image: 192.168.0.101:5000/next:latest # Master Node의 registry 주소로 설정
     imagePullPolicy: Always
 
-# nest-deployment.yaml 예시
+# /home/codej625/yaml/nest-deployment.yaml 예시
 containers:
   - name: nest
     image: 192.168.0.101:5000/nest:latest # Master Node의 registry 주소로 설정
@@ -214,9 +216,9 @@ containers:
 ```
 
 ```zsh
-# deployment 적용 (Master Node에서 실행)
-kubectl apply -f /home/codej625/yaml/next-deployment.yaml
-kubectl apply -f /home/codej625/yaml/nest-deployment.yaml
+# 최초 배포 전 Secret 먼저 등록 (Master Node에서 실행)
+# Deployment(next, nest)는 아래 6번의 ./deploy.sh 실행 시 이미지 빌드 후 자동 apply 됨
+kubectl apply -f /home/codej625/yaml/nest-secret.yaml
 ```
 
 <br />
@@ -289,6 +291,7 @@ NEXT_PUBLIC_API_URL="https://<사용하는 도메인>/api"
 GIT_ROOT="/<프로젝트 경로>"
 FRONTEND_PATH="$GIT_ROOT/front-end"
 BACKEND_PATH="$GIT_ROOT/back-end"
+YAML_DIR="/home/codej625/yaml"
 
 NEXT_LATEST="$REGISTRY/next:latest"
 NEXT_ROLLBACK="$REGISTRY/next:rollback"
@@ -305,7 +308,7 @@ if [ ! "$(docker ps -q -f name=^registry$)" ]; then
         docker start registry
     else
         docker run -d --name registry --restart always -p 5000:5000 \
-          -v /home/codej625/yaml/registry-config.yml:/etc/docker/registry/config.yml \
+          -v "$YAML_DIR/registry-config.yml:/etc/docker/registry/config.yml" \
           -v /home/codej625/registry-data:/var/lib/registry \
           registry:2
     fi
@@ -355,16 +358,21 @@ docker run --rm \
   npm run db:migrate:prod
 
 echo "=== 6. Kubernetes 배포 (NestJS 백엔드 먼저 배포) ==="
-kubectl set image deployment/nest nest="$NEST_LATEST"
-kubectl rollout restart deployment/nest
+# 최초 배포 시에는 Deployment를 생성하고, 이미 존재할 때는 HPA의 파드 개수가 초기화되지 않도록 롤링 재시작만 수행
+if ! kubectl get deployment nest -n default >/dev/null 2>&1; then
+  kubectl apply -f "$YAML_DIR/nest-deployment.yaml"
+else
+  kubectl set image deployment/nest nest="$NEST_LATEST" -n default
+  kubectl rollout restart deployment/nest -n default
+fi
 
-if kubectl rollout status deployment/nest --timeout=360s; then
+if kubectl rollout status deployment/nest -n default --timeout=360s; then
   echo "[성공] nest 배포 완료."
 else
   echo "[실패] nest 배포 실패. 직전 이미지(:rollback)로 즉시 복구합니다..."
   if [ "$HAS_NEST_ROLLBACK" = true ]; then
-    kubectl set image deployment/nest nest="$NEST_ROLLBACK"
-    kubectl rollout status deployment/nest --timeout=180s || true
+    kubectl set image deployment/nest nest="$NEST_ROLLBACK" -n default
+    kubectl rollout status deployment/nest -n default --timeout=180s || true
 
     docker pull "$NEST_ROLLBACK"
     docker tag "$NEST_ROLLBACK" "$NEST_LATEST"
@@ -379,24 +387,28 @@ else
 fi
 
 echo "=== 7. Kubernetes 배포 (Next.js 프론트엔드 배포) ==="
-kubectl set image deployment/next next="$NEXT_LATEST"
-kubectl rollout restart deployment/next
+if ! kubectl get deployment next -n default >/dev/null 2>&1; then
+  kubectl apply -f "$YAML_DIR/next-deployment.yaml"
+else
+  kubectl set image deployment/next next="$NEXT_LATEST" -n default
+  kubectl rollout restart deployment/next -n default
+fi
 
-if kubectl rollout status deployment/next --timeout=360s; then
+if kubectl rollout status deployment/next -n default --timeout=360s; then
   echo "[성공] next 배포 완료."
 else
   echo "[실패] next 배포 실패. 전체 서비스를 직전 이미지(:rollback)로 즉시 복구합니다..."
   if [ "$HAS_NEXT_ROLLBACK" = true ]; then
-    kubectl set image deployment/next next="$NEXT_ROLLBACK"
-    kubectl rollout status deployment/next --timeout=180s || true
+    kubectl set image deployment/next next="$NEXT_ROLLBACK" -n default
+    kubectl rollout status deployment/next -n default --timeout=180s || true
 
     docker pull "$NEXT_ROLLBACK"
     docker tag "$NEXT_ROLLBACK" "$NEXT_LATEST"
     docker push "$NEXT_LATEST"
   fi
   if [ "$HAS_NEST_ROLLBACK" = true ]; then
-    kubectl set image deployment/nest nest="$NEST_ROLLBACK"
-    kubectl rollout status deployment/nest --timeout=180s || true
+    kubectl set image deployment/nest nest="$NEST_ROLLBACK" -n default
+    kubectl rollout status deployment/nest -n default --timeout=180s || true
 
     docker pull "$NEST_ROLLBACK"
     docker tag "$NEST_ROLLBACK" "$NEST_LATEST"
