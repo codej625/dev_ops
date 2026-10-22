@@ -18,8 +18,8 @@ Hyper-V VM을 사용해서 K3s 클러스터 구조를 만들고 MetalLB, Service
 외부 요청
 -> 공유기 포트포워딩(80, 443 -> 192.168.0.240)
 -> kube-vip가 선정한 리더 워커 노드의 랜카드(보조 IP 192.168.0.240)로 유입
--> 노드의 kube-proxy(iptables)가 모든 워커 노드의 Traefik(Ingress Controller) 파드로 1차 분산(로드밸런싱)
--> Traefik이 IngressRoute 규칙을 보고 kube-proxy를 통해 각 노드의 앱 파드(next, nest)로 2차 분산(로드밸런싱)
+-> externalTrafficPolicy: Local 설정을 통해 패킷의 출발지 IP(클라이언트 진짜 IP)를 변조(SNAT)하지 않고 해당 워커 노드의 Traefik 파드로 직접 전달
+-> Traefik이 X-Forwarded-For 헤더에 실제 클라이언트 IP를 담아 IngressRoute 규칙에 따라 모든 워커 노드의 앱 파드(next, nest)로 균등 분산(로드밸런싱)
 ```
 
 <br />
@@ -370,10 +370,10 @@ df -h | grep uploads
 sudo mkdir -p /var/lib/rancher/k3s/server/manifests
 
 # Traefik 설정 파일 생성
-# - replicas: 2 로 설정하여 워커 노드에 각각 파드가 떠서 가용성 및 부하 분산 확보
-# - externalTrafficPolicy: Cluster (기본값)를 유지하여 VIP가 어느 워커에 잡히든
-#   kube-proxy가 워커1, 워커2의 Traefik 파드로 트래픽을 균등하게 로드밸런싱하도록 함
-# - forwardedHeaders.trustedIPs 설정을 통해 NestJS(trust proxy)가 실제 클라이언트 IP를 정확히 인식하도록 구성
+# - replicas: 2 로 설정하여 워커 노드에 각각 파드가 떠서 가용성 확보
+# - externalTrafficPolicy: Local 을 설정하여 kube-proxy의 SNAT(출발지 IP 변조)를 방지하고,
+#   실제 접속자의 공인 IP가 유실되지 않고 NestJS(로그인 로그, 감사 로그, IP 기반 Throttling)에 정확히 기록되도록 함
+# - forwardedHeaders.trustedIPs 설정을 통해 NestJS(trust proxy)가 X-Forwarded-For 헤더를 신뢰하도록 구성
 sudo tee /var/lib/rancher/k3s/server/manifests/traefik-config.yaml > /dev/null <<EOF
 apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
@@ -384,6 +384,9 @@ spec:
   valuesContent: |-
     deployment:
       replicas: 2
+    service:
+      spec:
+        externalTrafficPolicy: Local
     ports:
       web:
         forwardedHeaders:
@@ -541,10 +544,11 @@ kubectl delete pod test-1 test-2
   - 홈랩/단일 진입점 환경에서는 공유기 포트포워딩(80, 443)이 바라볼 단 하나의 고정 IP만 있으면 됨.
   - 클러스터 내부의 라우팅은 Ingress Controller(Traefik)가 도메인과 경로(/api 등)를 보고 각 Service로 분배하므로, 여러 개의 외부 IP를 찍어내는 무거운 IP Pool(MetalLB)은 불필요함.
 
-* kube-vip의 진짜 역할과 로드밸런싱의 오해
+* kube-vip의 진짜 역할과 트래픽 분산 구조
   - kube-vip 자체는 트래픽을 분산하는 로드밸런서(LB)가 아님.
   - 워커 노드 중 한 곳(리더)의 랜카드에 192.168.0.240(보조 IP)을 달아주고, 그 노드가 죽으면 다른 워커 노드로 IP를 즉시 옮겨주는 '고가용성(HA) 문지기' 역할만 수행함.
-  - 실제 트래픽 분산(Load Balancing)은 패킷이 노드에 도착한 직후, 리눅스 커널(kube-proxy / iptables)이 낚아채서 모든 워커 노드의 Traefik 파드들로 50:50 균등하게 뿌려줌.
+  - 패킷이 리더 워커 노드에 도착하면 externalTrafficPolicy: Local 설정에 의해 출발지 IP(클라이언트 진짜 IP)가 보존된 상태로 해당 노드의 Traefik 파드로 전달되며,
+    이후 Traefik이 워커1, 워커2에 떠 있는 모든 앱 파드(next, nest)들로 트래픽을 균등하게 로드밸런싱해 줌.
 
 * 왜 마스터 노드는 제외하고 워커 노드에만 설치하는가?
   - 현재 구성은 단일 마스터(1 Master)이므로 API 서버(6443) 이중화(--controlplane)가 필요 없음.
@@ -609,14 +613,15 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=kube-vip-ds -o wide
 kubectl get pods -n kube-system -l app.kubernetes.io/name=traefik -o wide
 # STATUS가 Running이어야 다음 단계 진행
 
-# Traefik Service에 고정 VIP(192.168.0.240)를 할당하도록 패치
+# Traefik Service에 고정 VIP(192.168.0.240) 및 externalTrafficPolicy: Local 을 할당하도록 패치
 # kube-vip 파드가 이 설정을 감지하고 리더 워커 노드의 랜카드(eth0)에 192.168.0.240을 보조 IP로 바인딩함
 kubectl patch svc traefik -n kube-system \
   --type=merge \
   -p '{
     "spec": {
       "type": "LoadBalancer",
-      "loadBalancerIP": "192.168.0.240"
+      "loadBalancerIP": "192.168.0.240",
+      "externalTrafficPolicy": "Local"
     },
     "metadata": {
       "annotations": {"kube-vip.io/requestedIP": "192.168.0.240"}
@@ -964,6 +969,8 @@ spec:
 #   --from-literal=DATABASE_URL='postgresql://{id}:{pw}@192.168.0.104:5432/{db_name}' \
 #   --from-literal=DATABASE_SSL=false \
 #   --from-literal=DATABASE_POOL_MAX=10 \
+#   --from-literal=DATABASE_STATEMENT_TIMEOUT_MS=60000 \
+#   --from-literal=DATABASE_QUERY_TIMEOUT_MS=60000 \
 #   --from-literal=JWT_SECRET='운영용-강한-랜덤-문자열-반드시-32자-이상으로-작성' \
 #   --from-literal=REFRESH_TOKEN_HASH_SECRET='운영용-다른-랜덤-문자열-반드시-32자-이상으로-작성' \
 #   --from-literal=CORS_ORIGIN='https://{domain_name}' \
@@ -983,6 +990,8 @@ stringData:
   DATABASE_URL: "postgresql://{id}:{password}@192.168.0.104:5432/{db_name}"
   DATABASE_SSL: "false"
   DATABASE_POOL_MAX: "10"
+  DATABASE_STATEMENT_TIMEOUT_MS: "60000"
+  DATABASE_QUERY_TIMEOUT_MS: "60000"
   JWT_SECRET: "REPLACE_WITH_STRONG_RANDOM_SECRET_AT_LEAST_32_CHARS"
   REFRESH_TOKEN_HASH_SECRET: "REPLACE_WITH_DIFFERENT_STRONG_RANDOM_HASH_SECRET_32_CHARS"
   CORS_ORIGIN: "https://{domain_name}"
@@ -1139,21 +1148,26 @@ spec:
 <br />
 
 ```zsh
+# [최초 1회 클러스터 구축 시 적용 순서 (중요!)]
 # 1) 시크릿을 가장 먼저 적용 (deploy.sh의 DB 마이그레이션 및 nest 파드 기동에 필수)
 kubectl apply -f nest-secret.yaml
 
-# 2) 최초 1회 배포 스크립트 실행 전, 매니페스트들을 클러스터에 등록
-kubectl apply -f nest-deployment.yaml
+# 2) 아직 사설 레지스트리에 이미지가 없으므로, Deployment를 먼저 apply 하면 파드가 ImagePullBackOff에 빠져
+#    롤링 업데이트(maxUnavailable: 0) 대기 타임아웃이 발생할 수 있음.
+#    따라서 먼저 배포 스크립트(./deploy.sh)를 1회 실행하여 이미지를 빌드/푸시하고 DB 마이그레이션을 완료함!
+#    (deploy.sh 내부에서 nest-deployment.yaml, next-deployment.yaml 을 자동으로 apply 해줌)
+./deploy.sh
+
+# 3) 이어서 Service, PDB, HPA 매니페스트들을 클러스터에 등록
 kubectl apply -f nest-svc.yaml
 kubectl apply -f nest-pdb.yaml
 kubectl apply -f nest-hpa.yaml
 
-kubectl apply -f next-deployment.yaml
 kubectl apply -f next-svc.yaml
 kubectl apply -f next-pdb.yaml
 kubectl apply -f next-hpa.yaml
 
-# 3) 이어서 ./deploy.sh 를 실행하여 이미지를 빌드/푸시하고 파드가 Running이 되면 Endpoint 연결 확인
+# 4) 파드가 Running이 되면 Endpoint 연결 확인
 kubectl get svc nest-svc next-svc
 kubectl get endpoints nest-svc next-svc # 각 Pod IP와 연결되었는지 확인
 ```
