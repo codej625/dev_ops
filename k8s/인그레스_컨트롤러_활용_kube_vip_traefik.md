@@ -128,20 +128,20 @@ sudo sysctl --system
 
 <br />
 
-`1) NTP 시간 동기화 (모든 VM에서)`
+`1) NTP 시간 동기화 및 표준시간대(UTC) 확인 (모든 VM에서)`
 
 ```zsh
 # 쿠버네티스는 노드 간 시간이 크게 어긋나면 TLS 인증 오류, etcd 이상, 토큰 검증 실패 등
 # 원인을 찾기 어려운 문제가 발생
 # 특히 Hyper-V VM은 호스트 절전이나 스냅샷 복구 시 시간이 틀어지기 쉬우므로 반드시 확인할 것
+# 글로벌 인프라 표준에 따라 서버 OS 및 컨테이너의 타임존은 모두 표준시간대(UTC)로 통일하고,
+# 한국 시간(KST)이 필요한 스케줄러는 코드(@Cron timeZone: 'Asia/Seoul')나 크론탭(CRON_TZ=Asia/Seoul)에서 명시적으로 지정함
 
-# 시간 동기화 상태 확인
-timedatectl status
-
-# NTP 동기화 활성화
+# 표준시간대(UTC) 설정 및 NTP 시간 동기화 활성화
+sudo timedatectl set-timezone UTC
 sudo timedatectl set-ntp true
 
-# 동기화 완료 확인 (System clock synchronized: yes 가 되어야 함)
+# 동기화 완료 및 타임존 확인 (Time zone: Etc/UTC, System clock synchronized: yes 확인)
 timedatectl status
 
 # 노드 간 시간 차이 확인 (각 VM에서 실행 후 비교)
@@ -301,11 +301,12 @@ EOF
 ```zsh
 # 3. DB 자동 백업(pg_dump) 크론탭 설정 (DB VM인 VM4에서 실행)
 # 단일 베어메탈 서버 특성상 디스크 장애에 대비해 매일 새벽 자동 백업 및 7일 이상 된 백업본 자동 삭제 설정 권장
+# 서버 OS가 표준시간대(UTC)이므로, 한국 시간 새벽 3시(03:00 KST)는 UTC 기준 18:00 임 (0 18 * * *)
 sudo mkdir -p /var/backups/postgres
 sudo chown postgres:postgres /var/backups/postgres
 
-# postgres 유저의 crontab에 매일 새벽 3시 DB 덤프 백업 등록 (raddot_console 은 실제 DB 이름으로 변경)
-sudo crontab -u postgres -l 2>/dev/null | { cat; echo "0 3 * * * pg_dump -Fc raddot_console > /var/backups/postgres/raddot_console_\$(date +\%F).dump && find /var/backups/postgres/ -type f -mtime +7 -delete"; } | sudo crontab -u postgres -
+# postgres 유저의 crontab에 매일 한국 시간 새벽 3시(UTC 18시) DB 덤프 백업 등록 (raddot_console 은 실제 DB 이름으로 변경)
+sudo crontab -u postgres -l 2>/dev/null | { cat; echo "0 18 * * * TZ=Asia/Seoul pg_dump -Fc raddot_console > /var/backups/postgres/raddot_console_\$(TZ=Asia/Seoul date +\%F).dump && find /var/backups/postgres/ -type f -mtime +7 -delete"; } | sudo crontab -u postgres -
 ```
 
 <br />
@@ -340,9 +341,9 @@ EOF
 sudo exportfs -ra
 sudo systemctl enable --now nfs-kernel-server
 
-# (선택) Storage VM 내부에서 매일 새벽 3시 30분 정적 파일 압축 백업 크론탭 등록
+# (선택) Storage VM 내부에서 매일 한국 시간 새벽 3시 30분(UTC 18시 30분) 정적 파일 압축 백업 크론탭 등록
 sudo mkdir -p /var/backups/uploads
-sudo crontab -l 2>/dev/null | { cat; echo "30 3 * * * tar -czf /var/backups/uploads/uploads_\$(date +\%F).tar.gz -C /srv/nfs uploads && find /var/backups/uploads/ -type f -mtime +7 -delete"; } | sudo crontab -
+sudo crontab -l 2>/dev/null | { cat; echo "30 18 * * * tar -czf /var/backups/uploads/uploads_\$(TZ=Asia/Seoul date +\%F).tar.gz -C /srv/nfs uploads && find /var/backups/uploads/ -type f -mtime +7 -delete"; } | sudo crontab -
 ```
 
 ```zsh
@@ -841,10 +842,10 @@ spec:
         resources:
           requests:
             cpu: "100m"
-            memory: "128Mi"
+            memory: "256Mi"
           limits:
             cpu: "1000m"
-            memory: "512Mi"
+            memory: "1Gi" # 30MB 대용량 엑셀(ExcelJS) 인메모리 파싱 시 OOMKilled 방지를 위해 1Gi 확보
         # 앱 초기화 완료 전까지 liveness/readiness 보호
         startupProbe:
           httpGet:
